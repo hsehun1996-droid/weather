@@ -47,15 +47,44 @@
 매칭). 더 정교하게 하려면 기상청이 제공하는 특보구역코드표를 이용해 구조화된
 매칭으로 바꿀 수 있다 — 필요하면 알려주면 추가로 구현 가능.
 
-## 실행 방법
+## 실행 방법 (뭘 누르면 되나요?)
+
+**사전 준비 (최초 1회만):** [python.org](https://www.python.org/downloads/)에서
+Python 3를 설치한다. Windows 설치 화면에서 **"Add python.exe to PATH"** 체크박스를
+반드시 체크한다. tkinter는 표준 설치본에 기본 포함되어 있어 따로 설치할 필요가 없다.
+
+그 다음부터는 아래 파일을 **더블클릭**하면 된다.
+
+| OS | 더블클릭할 파일 |
+| --- | --- |
+| Windows | `run.bat` |
+| macOS | `run.command` (최초 실행 시 "확인 없이 열기" 허용 필요할 수 있음) |
+
+실행하면 검은 콘솔 창이 잠깐 뜨면서 필요한 라이브러리를 자동 설치한 뒤
+프로그램 창이 뜬다. 처음 실행 시에는 프로그램 안의 **"설정(서비스키)"** 버튼을
+눌러 공공데이터포털에서 받은 서비스키를 입력해야 데이터가 표시된다.
+
+### Python 설치 없이 배포하고 싶다면 (완전한 .exe로 묶기)
+
+담당자 PC마다 Python을 설치하기 번거롭다면, 아래 스크립트를 **한 번만** 실행해
+Python 없이도 바로 실행되는 단일 실행파일을 만들 수 있다. 이 스크립트 자체는
+Python이 설치된 PC에서 실행해야 하지만, 결과물(`WeatherDuty.exe`)은 다른
+Windows PC에 Python 없이 그대로 복사해서 쓸 수 있다.
+
+| OS | 더블클릭할 파일 | 결과물 |
+| --- | --- | --- |
+| Windows | `build_exe.bat` | `dist\WeatherDuty.exe` |
+| macOS/Linux | `build_exe.sh` | `dist/WeatherDuty` |
+
+> PyInstaller는 빌드한 OS용 실행파일만 만든다 (예: Mac에서 빌드하면 Mac용만
+> 생성됨). Windows 배포용 exe가 필요하면 반드시 Windows PC에서 빌드해야 한다.
+
+### 터미널에 익숙하다면
 
 ```bash
 pip install -r requirements.txt
-python -m weather_duty.app
+python main.py
 ```
-
-Windows/Mac 표준 파이썬 설치본에는 tkinter가 기본 포함되어 있다. 일부 리눅스
-배포판은 `sudo apt install python3-tk` 가 별도로 필요하다.
 
 ## 설정 파일 위치
 
