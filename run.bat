@@ -1,5 +1,4 @@
 @echo off
-chcp 65001 >nul
 cd /d "%~dp0"
 
 where py >nul 2>nul
@@ -10,18 +9,25 @@ if %ERRORLEVEL%==0 (
     if %ERRORLEVEL%==0 (
         set PYCMD=python
     ) else (
-        echo Python이 설치되어 있지 않습니다.
-        echo https://www.python.org/downloads/ 에서 Python 3 를 내려받아 설치한 뒤,
-        echo 설치 화면에서 "Add python.exe to PATH" 체크박스를 반드시 체크하세요.
+        echo [ERROR] Python was not found on this PC.
+        echo Install Python 3 from https://www.python.org/downloads/
+        echo During setup, check the "Add python.exe to PATH" checkbox, then run this file again.
         pause
         exit /b 1
     )
 )
 
-echo 필요한 라이브러리를 설치합니다...
-%PYCMD% -m pip install --quiet -r requirements.txt
+echo Installing required packages, please wait...
+%PYCMD% -m pip install -r requirements.txt
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Failed to install required packages ^(see the message above^).
+    echo Check your internet connection and try again.
+    pause
+    exit /b 1
+)
 
-echo 프로그램을 실행합니다...
+echo Starting Weather Duty...
 %PYCMD% main.py
 
 pause

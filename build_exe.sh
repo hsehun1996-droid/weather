@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 
 PYCMD=python3
 echo "빌드 도구를 설치합니다..."
-$PYCMD -m pip install --quiet -r requirements.txt pyinstaller
+$PYCMD -m pip install -r requirements.txt pyinstaller
 
 echo "WeatherDuty 를 빌드합니다..."
 $PYCMD -m PyInstaller --onefile --windowed --name WeatherDuty main.py
