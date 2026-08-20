@@ -18,6 +18,17 @@ import urllib.parse
 
 import requests
 
+try:
+    # 사내망이 PAC(자동 프록시 설정 스크립트)를 쓰는 경우, 일반 requests는 이를
+    # 인식하지 못해 브라우저는 되는데 이 프로그램만 연결에 실패할 수 있다.
+    # pypac은 Windows/macOS의 PAC 설정을 자동으로 찾아 적용한다(없으면 무해하게
+    # 일반 연결로 동작).
+    import pypac
+
+    _SESSION = pypac.PACSession()
+except Exception:  # noqa: BLE001
+    _SESSION = requests.Session()
+
 BASE_VILAGE = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0"
 BASE_MID = "https://apis.data.go.kr/1360000/MidFcstInfoService"
 BASE_WARN = "https://apis.data.go.kr/1360000/WthrWrnInfoService"
@@ -60,7 +71,7 @@ def _get(url, service_key, params):
     qs = urllib.parse.urlencode(query)
     full_url = f"{url}?serviceKey={encoded_key}&{qs}"
     try:
-        resp = requests.get(full_url, timeout=TIMEOUT_SEC)
+        resp = _SESSION.get(full_url, timeout=TIMEOUT_SEC)
         resp.raise_for_status()
     except requests.exceptions.HTTPError as exc:
         raise KmaApiError(
