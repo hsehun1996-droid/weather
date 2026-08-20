@@ -23,6 +23,8 @@ COLOR_WARN_TEXT = ("#FF3B30", "#FF453A")
 COLOR_OK_BG = ("#EAF7ED", "#1F3324")
 COLOR_OK_TEXT = ("#34A853", "#30D158")
 COLOR_BORDER = ("#D1D1D6", "#3A3A3C")
+COLOR_RISK_HIGH = ("#D70015", "#FF453A")
+COLOR_RISK_MID = ("#C77700", "#FF9F0A")
 
 _FONT_CANDIDATES = (
     "SF Pro Display",
@@ -41,6 +43,16 @@ def _pick_font_family():
         if candidate in available:
             return candidate
     return "TkDefaultFont"
+
+
+def _pop_color(pop):
+    if pop is None:
+        return COLOR_SUBTEXT
+    if pop >= 70:
+        return COLOR_RISK_HIGH
+    if pop >= 50:
+        return COLOR_RISK_MID
+    return COLOR_ACCENT
 
 
 class RegionManagerDialog(ctk.CTkToplevel):
@@ -129,10 +141,12 @@ class RegionManagerDialog(ctk.CTkToplevel):
     def _toggle(self, name, var):
         if var.get():
             self.favorites.add(name)
+            config.set_favorites(sorted(self.favorites))
+            self.on_change(added=name)
         else:
             self.favorites.discard(name)
-        config.set_favorites(sorted(self.favorites))
-        self.on_change()
+            config.set_favorites(sorted(self.favorites))
+            self.on_change(removed=name)
 
     def _open_custom_region_form(self):
         CustomRegionForm(self, self._render_results)
@@ -190,7 +204,9 @@ class CustomRegionForm(ctk.CTkToplevel):
             return
         regions.add_custom_region(name, lat, lon, self.sido_var.get())
         config.add_favorite(name)
+        self.master.favorites.add(name)
         self.on_saved()
+        self.master.on_change(added=name)
         self.destroy()
 
 
@@ -240,8 +256,8 @@ class WeatherDutyApp(ctk.CTk):
         super().__init__()
 
         self.title("폭염·풍수해·제설 근무 날씨 모니터")
-        self.geometry("1100x680")
-        self.minsize(900, 600)
+        self.geometry("1180x700")
+        self.minsize(960, 600)
         self.configure(fg_color=COLOR_BG)
 
         family = _pick_font_family()
@@ -254,6 +270,8 @@ class WeatherDutyApp(ctk.CTk):
         self.selected_region = None
         self.reports = {}
         self.favorite_buttons = {}
+        self.view_mode = "detail"
+        self._fetch_seq = 0
 
         self._build_toolbar()
         self._build_layout()
@@ -275,6 +293,10 @@ class WeatherDutyApp(ctk.CTk):
         ctk.CTkButton(toolbar, text="즐겨찾기 편집", width=110, command=self._open_region_manager).pack(
             side="right", padx=4
         )
+        self.view_toggle_btn = ctk.CTkButton(
+            toolbar, text="즐겨찾기 종합 보기", width=140, command=self._toggle_view_mode
+        )
+        self.view_toggle_btn.pack(side="right", padx=4)
         ctk.CTkButton(toolbar, text="새로고침", width=84, command=self.refresh_all).pack(side="right", padx=4)
 
     def _build_layout(self):
@@ -295,13 +317,14 @@ class WeatherDutyApp(ctk.CTk):
         self.main_frame = ctk.CTkFrame(body, fg_color="transparent")
         self.main_frame.pack(side="left", fill="both", expand=True, padx=(16, 0))
 
-        self._build_main_placeholder()
+        self.detail_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.summary_frame = ctk.CTkScrollableFrame(self.main_frame, fg_color=COLOR_CARD, corner_radius=16)
 
-    def _build_main_placeholder(self):
-        for widget in self.main_frame.winfo_children():
-            widget.destroy()
+        self._build_detail_widgets(self.detail_frame)
+        self.detail_frame.pack(fill="both", expand=True)
 
-        header = ctk.CTkFrame(self.main_frame, fg_color=COLOR_CARD, corner_radius=16)
+    def _build_detail_widgets(self, parent):
+        header = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=16)
         header.pack(fill="x", pady=(0, 12))
 
         top_row = ctk.CTkFrame(header, fg_color="transparent")
@@ -344,37 +367,76 @@ class WeatherDutyApp(ctk.CTk):
         self.warning_banner.pack(fill="x", padx=20, pady=(8, 18), ipady=8)
 
         ctk.CTkLabel(
-            self.main_frame, text="향후 예보 (가져올 수 있는 최대 기간)", font=self.font_body, text_color=COLOR_SUBTEXT,
+            parent, text="향후 예보 (가져올 수 있는 최대 기간)", font=self.font_body, text_color=COLOR_SUBTEXT,
             anchor="w",
         ).pack(fill="x", pady=(0, 6))
 
-        self.forecast_frame = ctk.CTkScrollableFrame(self.main_frame, fg_color=COLOR_CARD, corner_radius=16)
+        self.forecast_frame = ctk.CTkScrollableFrame(parent, fg_color=COLOR_CARD, corner_radius=16)
         self.forecast_frame.pack(fill="both", expand=True)
 
-    # ---------- data ----------
+    # ---------- view mode ----------
+    def _toggle_view_mode(self):
+        if self.view_mode == "detail":
+            self.view_mode = "summary"
+            self.detail_frame.pack_forget()
+            self.summary_frame.pack(fill="both", expand=True)
+            self.view_toggle_btn.configure(text="지역별 상세 보기")
+        else:
+            self.view_mode = "detail"
+            self.summary_frame.pack_forget()
+            self.detail_frame.pack(fill="both", expand=True)
+            self.view_toggle_btn.configure(text="즐겨찾기 종합 보기")
+        self._refresh_current_view()
+
+    def _refresh_current_view(self):
+        favorites = config.get_favorites()
+        self._render_favorite_buttons(favorites)
+        if self.view_mode == "summary":
+            self._render_summary(favorites)
+        elif self.selected_region:
+            self._render_region(self.selected_region)
+
+    # ---------- dialogs ----------
     def _open_region_manager(self):
-        RegionManagerDialog(self, self._reload_favorites_and_refresh)
+        RegionManagerDialog(self, self._on_favorite_changed)
 
     def _open_settings(self):
         SettingsDialog(self, self.refresh_all)
 
-    def _reload_favorites_and_refresh(self):
-        self.refresh_all()
+    def _on_favorite_changed(self, added=None, removed=None):
+        favorites = config.get_favorites()
+        if removed and self.selected_region == removed:
+            self.selected_region = favorites[0] if favorites else None
+        if added and self.selected_region is None:
+            self.selected_region = added
+        if removed:
+            self.reports.pop(removed, None)
+        self._refresh_current_view()
 
+        service_key = config.get_service_key()
+        if added and service_key:
+            threading.Thread(target=self._fetch_one, args=(service_key, added), daemon=True).start()
+
+    # ---------- data: full refresh ----------
     def refresh_all(self):
         service_key = config.get_service_key()
         if not service_key:
             self.status_label.configure(text="서비스키 미설정 - '설정'에서 입력하세요")
-            self._render_favorite_buttons([])
+            self.reports = {}
+            self._refresh_current_view()
             return
 
         favorites = config.get_favorites()
         self.status_label.configure(text="조회 중...")
-        self._render_favorite_buttons(favorites, loading=True)
+        self._fetch_seq += 1
+        seq = self._fetch_seq
+        for name in favorites:
+            self.reports.pop(name, None)
+        self._refresh_current_view()
 
-        threading.Thread(target=self._fetch_all, args=(service_key, favorites), daemon=True).start()
+        threading.Thread(target=self._fetch_all, args=(service_key, favorites, seq), daemon=True).start()
 
-    def _fetch_all(self, service_key, favorites):
+    def _fetch_all(self, service_key, favorites, seq):
         all_regions = regions.all_regions()
         try:
             warnings = kma_client.get_active_warnings(service_key)
@@ -393,19 +455,35 @@ class WeatherDutyApp(ctk.CTk):
                 report["errors"].append(f"특보 조회 실패: {warnings_error}")
             reports[name] = report
 
-        self.reports = reports
-        self.after(0, self._on_data_ready, favorites)
+        self.after(0, self._apply_fetch_result, seq, reports, favorites)
 
-    def _on_data_ready(self, favorites):
+    def _apply_fetch_result(self, seq, reports, favorites):
+        if seq != self._fetch_seq:
+            return  # 새 새로고침이 이미 시작돼 이 결과는 낡은 것 -> 버린다
         self.status_label.configure(text="갱신 완료")
-        self._render_favorite_buttons(favorites)
+        self.reports.update(reports)
         if favorites and (self.selected_region not in self.reports):
             self.selected_region = favorites[0]
-        if self.selected_region:
-            self._render_region(self.selected_region)
+        self._refresh_current_view()
 
-    # ---------- rendering ----------
-    def _render_favorite_buttons(self, favorites, loading=False):
+    # ---------- data: single-region fetch (즐겨찾기에 지역 추가 시) ----------
+    def _fetch_one(self, service_key, name):
+        info = regions.all_regions().get(name)
+        if not info:
+            return
+        try:
+            warnings = kma_client.get_active_warnings(service_key)
+        except Exception:  # noqa: BLE001
+            warnings = []
+        report = kma_client.build_region_report(service_key, name, info, warnings)
+        self.after(0, self._merge_one_report, name, report)
+
+    def _merge_one_report(self, name, report):
+        self.reports[name] = report
+        self._refresh_current_view()
+
+    # ---------- rendering: sidebar ----------
+    def _render_favorite_buttons(self, favorites):
         for widget in self.favorites_frame.winfo_children():
             widget.destroy()
         self.favorite_buttons = {}
@@ -422,9 +500,10 @@ class WeatherDutyApp(ctk.CTk):
 
         for name in favorites:
             is_selected = name == self.selected_region
+            is_loading = name not in self.reports
             btn = ctk.CTkButton(
                 self.favorites_frame,
-                text=("조회 중…  " + name) if loading else name,
+                text=("조회 중…  " + name) if is_loading else name,
                 anchor="w",
                 fg_color=COLOR_ACCENT if is_selected else "transparent",
                 text_color=("#FFFFFF" if is_selected else COLOR_TEXT[0], "#FFFFFF" if is_selected else COLOR_TEXT[1]),
@@ -438,10 +517,14 @@ class WeatherDutyApp(ctk.CTk):
 
     def _select_region(self, name):
         self.selected_region = name
-        favorites = config.get_favorites()
-        self._render_favorite_buttons(favorites)
-        self._render_region(name)
+        if self.view_mode != "detail":
+            self.view_mode = "detail"
+            self.summary_frame.pack_forget()
+            self.detail_frame.pack(fill="both", expand=True)
+            self.view_toggle_btn.configure(text="즐겨찾기 종합 보기")
+        self._refresh_current_view()
 
+    # ---------- rendering: detail view ----------
     def _render_region(self, name):
         report = self.reports.get(name)
         if not report:
@@ -499,14 +582,22 @@ class WeatherDutyApp(ctk.CTk):
                 side="left"
             )
             ctk.CTkLabel(
-                row, text=day.get("condition") or "-", font=self.font_body, text_color=COLOR_SUBTEXT, width=160,
+                row, text=day.get("condition") or "-", font=self.font_body, text_color=COLOR_SUBTEXT, width=140,
                 anchor="w",
             ).pack(side="left")
+
             pop = day.get("pop")
+            pop_text = f"강수확률 {pop}%" if pop is not None else "강수확률 -"
+            ctk.CTkLabel(row, text=pop_text, font=self.font_small, text_color=_pop_color(pop), width=90, anchor="w").pack(
+                side="left"
+            )
+
+            pcp = day.get("pcp")
+            pcp_text = f"강수량 {pcp}" if pcp else ("강수량 -" if pop is not None else "")
             ctk.CTkLabel(
-                row, text=(f"강수 {pop}%" if pop is not None else ""), font=self.font_small,
-                text_color=COLOR_ACCENT, width=80, anchor="w",
+                row, text=pcp_text, font=self.font_small, text_color=COLOR_SUBTEXT, width=130, anchor="w"
             ).pack(side="left")
+
             tmin, tmax = day.get("tmin"), day.get("tmax")
             temp_text = f"{tmin}° / {tmax}°" if (tmin or tmax) else "-"
             ctk.CTkLabel(row, text=temp_text, font=self.font_body, text_color=COLOR_TEXT, width=110, anchor="e").pack(
@@ -518,6 +609,86 @@ class WeatherDutyApp(ctk.CTk):
             ).pack(side="right", padx=(0, 8))
 
             ctk.CTkFrame(self.forecast_frame, fg_color=COLOR_BORDER, height=1).pack(fill="x", padx=16)
+
+    # ---------- rendering: summary view (여러 즐겨찾기 지역을 날짜별로 한번에) ----------
+    def _render_summary(self, favorites):
+        for widget in self.summary_frame.winfo_children():
+            widget.destroy()
+
+        if not favorites:
+            ctk.CTkLabel(
+                self.summary_frame, text="즐겨찾기가 비어 있습니다.", font=self.font_body, text_color=COLOR_SUBTEXT
+            ).grid(row=0, column=0, padx=16, pady=20)
+            return
+
+        all_dates = []
+        seen = set()
+        for name in favorites:
+            report = self.reports.get(name)
+            if not report:
+                continue
+            for day in report.get("forecast", []):
+                d = day.get("date")
+                if d and d not in seen:
+                    seen.add(d)
+                    all_dates.append(d)
+        all_dates.sort()
+
+        if not all_dates:
+            ctk.CTkLabel(
+                self.summary_frame, text="예보 데이터를 불러오는 중입니다…", font=self.font_body,
+                text_color=COLOR_SUBTEXT,
+            ).grid(row=0, column=0, padx=16, pady=20)
+            return
+
+        name_col_width = 170
+        ctk.CTkLabel(
+            self.summary_frame, text="지역", font=self.font_body, text_color=COLOR_SUBTEXT, width=name_col_width,
+            anchor="w",
+        ).grid(row=0, column=0, padx=(16, 4), pady=(16, 8), sticky="w")
+        for col, date_str in enumerate(all_dates, start=1):
+            pretty = f"{date_str[4:6]}/{date_str[6:8]}" if len(date_str) == 8 else date_str
+            ctk.CTkLabel(
+                self.summary_frame, text=pretty, font=self.font_body, text_color=COLOR_SUBTEXT, width=90,
+            ).grid(row=0, column=col, padx=4, pady=(16, 8))
+
+        for row_idx, name in enumerate(favorites, start=1):
+            report = self.reports.get(name)
+            is_loading = report is None
+            ctk.CTkLabel(
+                self.summary_frame,
+                text=("조회 중… " + name) if is_loading else name,
+                font=self.font_body,
+                text_color=COLOR_TEXT,
+                width=name_col_width,
+                anchor="w",
+            ).grid(row=row_idx, column=0, padx=(16, 4), pady=6, sticky="w")
+
+            by_date = {}
+            if report:
+                for day in report.get("forecast", []):
+                    by_date[day.get("date")] = day
+
+            for col, date_str in enumerate(all_dates, start=1):
+                day = by_date.get(date_str)
+                if not day:
+                    text, color = "-", COLOR_SUBTEXT
+                else:
+                    pop = day.get("pop")
+                    pcp = day.get("pcp") or ""
+                    pcp_short = pcp if (pcp and pcp != "강수없음") else ""
+                    text = f"{pop}%" if pop is not None else "-"
+                    if pcp_short:
+                        text += f"\n{pcp_short}"
+                    color = _pop_color(pop)
+                ctk.CTkLabel(
+                    self.summary_frame, text=text, font=self.font_small, text_color=color, width=90, justify="center",
+                ).grid(row=row_idx, column=col, padx=4, pady=6)
+
+            if report and report.get("warnings"):
+                ctk.CTkLabel(
+                    self.summary_frame, text="⚠ 특보", font=self.font_small, text_color=COLOR_WARN_TEXT,
+                ).grid(row=row_idx, column=len(all_dates) + 1, padx=(8, 16), pady=6)
 
 
 def main():
