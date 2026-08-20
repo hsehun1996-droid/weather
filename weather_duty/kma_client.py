@@ -7,7 +7,7 @@
   2. 중기예보 조회서비스 - MidFcstInfoService
      - getMidTa       : 중기기온(3~10일 후 최저/최고기온)
      - getMidLandFcst : 중기육상예보(3~10일 후 하늘상태 텍스트, 강수확률)
-  3. 기상특보 조회서비스 - WthrWrnInfoService02
+  3. 기상특보 조회서비스 - WthrWrnInfoService
      - getWthrWrnList : 현재 발효 중인 특보 목록(자유 텍스트, 당일 기준만 제공)
 
 data.go.kr에서 활용신청이 승인되어야 서비스키(인코딩/디코딩 키)를 받을 수 있다.
@@ -20,7 +20,7 @@ import requests
 
 BASE_VILAGE = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0"
 BASE_MID = "https://apis.data.go.kr/1360000/MidFcstInfoService"
-BASE_WARN = "https://apis.data.go.kr/1360000/WthrWrnInfoService02"
+BASE_WARN = "https://apis.data.go.kr/1360000/WthrWrnInfoService"
 
 TIMEOUT_SEC = 10
 
