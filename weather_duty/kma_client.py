@@ -39,6 +39,18 @@ def _service_key_param(service_key):
     return service_key
 
 
+def _redact(text, service_key):
+    """오류 메시지에 서비스키가 그대로 노출되지 않도록 마스킹한다.
+    (오류 화면을 캡처해 공유해도 키가 유출되지 않게 하기 위함)"""
+    if not service_key:
+        return text
+    text = text.replace(service_key, "***")
+    quoted = urllib.parse.quote(service_key, safe="")
+    if quoted != service_key:
+        text = text.replace(quoted, "***")
+    return text
+
+
 def _get(url, service_key, params):
     query = {"serviceKey": _service_key_param(service_key), "dataType": "JSON"}
     query.update(params)
@@ -47,12 +59,41 @@ def _get(url, service_key, params):
     encoded_key = query.pop("serviceKey")
     qs = urllib.parse.urlencode(query)
     full_url = f"{url}?serviceKey={encoded_key}&{qs}"
-    resp = requests.get(full_url, timeout=TIMEOUT_SEC)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(full_url, timeout=TIMEOUT_SEC)
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as exc:
+        raise KmaApiError(
+            f"[HTTP 오류 {exc.response.status_code}] {_redact(str(exc), service_key)}"
+        ) from exc
+    except requests.exceptions.SSLError as exc:
+        raise KmaApiError(
+            "[SSL 인증서 오류] 백신 프로그램이나 사내 보안 프로그램(SSL 검사/프록시)이 "
+            f"연결을 가로채고 있을 수 있습니다. 상세: {_redact(str(exc), service_key)}"
+        ) from exc
+    except requests.exceptions.ConnectTimeout as exc:
+        raise KmaApiError(
+            "[연결 시간 초과] 기상청 서버에 연결하지 못했습니다. 사내망이라면 "
+            "방화벽에서 apis.data.go.kr(443 포트) 아웃바운드를 막고 있을 수 있습니다. "
+            f"상세: {_redact(str(exc), service_key)}"
+        ) from exc
+    except requests.exceptions.ConnectionError as exc:
+        raise KmaApiError(
+            "[연결 실패] 인터넷 연결 상태를 확인하거나, 사내망이라면 관리자에게 "
+            f"apis.data.go.kr(443 포트) 아웃바운드 허용을 요청하세요. 상세: {_redact(str(exc), service_key)}"
+        ) from exc
+    except requests.exceptions.Timeout as exc:
+        raise KmaApiError(
+            f"[응답 지연] 기상청 서버 응답이 너무 느립니다. 상세: {_redact(str(exc), service_key)}"
+        ) from exc
+    except requests.exceptions.RequestException as exc:
+        raise KmaApiError(f"[네트워크 오류] {_redact(str(exc), service_key)}") from exc
     try:
         data = resp.json()
     except ValueError:
-        raise KmaApiError(f"JSON이 아닌 응답 (인증키 오류 가능): {resp.text[:200]}")
+        raise KmaApiError(
+            f"JSON이 아닌 응답 (인증키 오류 가능): {_redact(resp.text[:200], service_key)}"
+        )
 
     header = data.get("response", {}).get("header", {})
     if header.get("resultCode") not in ("00", "0"):
@@ -278,10 +319,11 @@ def build_region_report(service_key, region_name, region_info, warnings, now=Non
         report["errors"].append(f"단기예보 조회 실패: {exc}")
 
     mid_term = []
-    reg_id = region_info.get("regId")
-    if reg_id:
+    mid_land_regid = region_info.get("mid_land_regid")
+    mid_ta_regid = region_info.get("mid_ta_regid")
+    if mid_land_regid and mid_ta_regid:
         try:
-            mid_term = get_mid_term_forecast(service_key, reg_id, reg_id, now)
+            mid_term = get_mid_term_forecast(service_key, mid_land_regid, mid_ta_regid, now)
         except Exception as exc:  # noqa: BLE001
             report["errors"].append(f"중기예보 조회 실패: {exc}")
 

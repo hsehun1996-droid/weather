@@ -2,6 +2,8 @@ import datetime
 import unittest
 from unittest.mock import patch, MagicMock
 
+import requests
+
 from weather_duty import kma_client
 
 
@@ -119,6 +121,19 @@ class TestErrorHandling(unittest.TestCase):
         mock_get.return_value = resp
         with self.assertRaises(kma_client.KmaApiError):
             kma_client.get_current_conditions("bad-key", 60, 127)
+
+
+class TestServiceKeyRedaction(unittest.TestCase):
+    @patch("weather_duty.kma_client.requests.get")
+    def test_connection_error_does_not_leak_service_key(self, mock_get):
+        secret_key = "TOP-SECRET-KEY-12345"
+        mock_get.side_effect = requests.exceptions.ConnectionError(
+            f"Failed to reach https://apis.data.go.kr/x?serviceKey={secret_key}&y=1"
+        )
+        with self.assertRaises(kma_client.KmaApiError) as ctx:
+            kma_client.get_current_conditions(secret_key, 60, 127)
+        self.assertNotIn(secret_key, str(ctx.exception))
+        self.assertIn("***", str(ctx.exception))
 
 
 if __name__ == "__main__":
