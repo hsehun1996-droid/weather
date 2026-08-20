@@ -304,19 +304,25 @@ def get_mid_term_forecast(service_key, reg_id_land, reg_id_ta, now=None):
     return result
 
 
+_WARN_TEXT_FIELDS = ("t1", "t2", "t3", "t4", "t6", "t7", "other", "warFc")
+
+
 def get_active_warnings(service_key, now=None):
-    """현재 발효 중인 기상특보 목록(제목/내용 텍스트)을 반환.
-    이 API는 지역코드가 아닌 자유 텍스트로 내려오므로, 지역별 매칭은
-    호출부에서 키워드 포함 여부로 판단한다."""
+    """현재 발효 중인 기상특보 목록(통보문 텍스트)을 반환.
+    getWthrWrnMsg는 stnId(관측지점번호)가 필수이며, 특보구역별로 나뉘지 않고
+    지역명이 포함된 자유 텍스트(t1~t7 등)로 내려오므로, 지역별 매칭은 호출부에서
+    키워드 포함 여부로 판단한다. stnId=108(서울)은 전국 특보를 포괄해서 보여주는
+    대표 지점으로 흔히 쓰인다."""
     now = now or datetime.datetime.now()
+    today = now.strftime("%Y%m%d")
     items = _get(
-        f"{BASE_WARN}/getWthrWrnList",
+        f"{BASE_WARN}/getWthrWrnMsg",
         service_key,
-        {"numOfRows": 100, "pageNo": 1, "fromTmFc": (now - datetime.timedelta(days=1)).strftime("%Y%m%d0000"), "toTmFc": now.strftime("%Y%m%d%H%M")},
+        {"numOfRows": 100, "pageNo": 1, "stnId": 108, "fromTmFc": today, "toTmFc": today},
     )
     warnings = []
     for it in items:
-        text = " ".join(str(it.get(k, "")) for k in ("title", "t6", "t3") if it.get(k))
+        text = " ".join(str(it.get(k, "")) for k in _WARN_TEXT_FIELDS if it.get(k))
         warnings.append({"raw": it, "text": text})
     return warnings
 
