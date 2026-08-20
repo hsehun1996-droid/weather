@@ -19,6 +19,18 @@ import urllib.parse
 import requests
 
 try:
+    # 회사/기관 보안 프로그램(SSL 검사·프록시)이 자체 인증서로 HTTPS 트래픽을
+    # 가로채는 환경이 흔하다. 그 인증서는 Windows 신뢰 저장소에는 이미 등록돼
+    # 있어 크롬은 문제없이 통과하지만, requests/certifi는 자체 CA 목록만 신뢰해
+    # "self-signed certificate in certificate chain" 오류가 난다. truststore는
+    # OS 신뢰 저장소(크롬이 쓰는 것과 동일)를 그대로 쓰도록 ssl 모듈을 바꿔준다.
+    import truststore
+
+    truststore.inject_into_ssl()
+except Exception:  # noqa: BLE001
+    pass
+
+try:
     # 사내망이 PAC(자동 프록시 설정 스크립트)를 쓰는 경우, 일반 requests는 이를
     # 인식하지 못해 브라우저는 되는데 이 프로그램만 연결에 실패할 수 있다.
     # pypac은 Windows/macOS의 PAC 설정을 자동으로 찾아 적용한다(없으면 무해하게
