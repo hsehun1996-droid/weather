@@ -42,11 +42,14 @@ class TestVilageFcst(unittest.TestCase):
             {"fcstDate": "20260819", "fcstTime": "1500", "category": "TMX", "fcstValue": "34"},
             {"fcstDate": "20260819", "fcstTime": "0600", "category": "TMN", "fcstValue": "26"},
             {"fcstDate": "20260819", "fcstTime": "1500", "category": "POP", "fcstValue": "30"},
+            {"fcstDate": "20260819", "fcstTime": "0900", "category": "PCP", "fcstValue": "1.0mm"},
+            {"fcstDate": "20260819", "fcstTime": "1200", "category": "PCP", "fcstValue": "1mm 미만"},
             {"fcstDate": "20260819", "fcstTime": "1500", "category": "PCP", "fcstValue": "강수없음"},
             {"fcstDate": "20260819", "fcstTime": "1500", "category": "SKY", "fcstValue": "1"},
             {"fcstDate": "20260819", "fcstTime": "1500", "category": "PTY", "fcstValue": "0"},
             {"fcstDate": "20260820", "fcstTime": "1500", "category": "TMX", "fcstValue": "33"},
             {"fcstDate": "20260820", "fcstTime": "0600", "category": "TMN", "fcstValue": "25"},
+            {"fcstDate": "20260820", "fcstTime": "1500", "category": "PCP", "fcstValue": "30.0mm 이상"},
         ]
         mock_get.return_value = _mock_response(items)
         result = kma_client.get_short_term_forecast(
@@ -59,6 +62,22 @@ class TestVilageFcst(unittest.TestCase):
         self.assertEqual(day1["tmax"], "34")
         self.assertEqual(day1["pop"], 30)
         self.assertEqual(day1["condition"], "맑음")
+        # 00~24시 누적: 1.0mm + 1mm(미만 표기값 그대로) = 2mm
+        self.assertEqual(day1["pcp"], "2mm")
+
+        day2 = result[1]
+        self.assertEqual(day2["pcp"], "30mm+")
+
+
+class TestDailyPcpSum(unittest.TestCase):
+    def test_all_no_rain_is_no_rain(self):
+        self.assertEqual(kma_client._sum_daily_pcp(["강수없음", "강수없음"]), "강수없음")
+
+    def test_empty_is_no_rain(self):
+        self.assertEqual(kma_client._sum_daily_pcp([]), "강수없음")
+
+    def test_sums_exact_values(self):
+        self.assertEqual(kma_client._sum_daily_pcp(["1.0mm", "4.0mm", "강수없음"]), "5mm")
 
 
 class TestMidTermForecast(unittest.TestCase):

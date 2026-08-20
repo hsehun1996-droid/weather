@@ -14,6 +14,7 @@ data.go.kr에서 활용신청이 승인되어야 서비스키(인코딩/디코�
 신청 페이지에서 위 3개 서비스를 모두 "활용신청"해야 한다.
 """
 import datetime
+import re
 import urllib.parse
 
 import requests
@@ -49,6 +50,34 @@ TIMEOUT_SEC = 10
 
 SKY_TEXT = {"1": "맑음", "3": "구름많음", "4": "흐림"}
 PTY_TEXT = {"0": "없음", "1": "비", "2": "비/눈", "3": "눈", "4": "소나기"}
+
+_PCP_NUMBER_RE = re.compile(r"([\d.]+)")
+
+
+def _sum_daily_pcp(pcp_values):
+    """단기예보 PCP는 3시간 구간별 범주형 문자열("1.0mm", "1mm 미만", "30.0mm 이상",
+    "강수없음")로 내려온다. 하루치를 00~24시 누적값 하나로 합산한다.
+    "미만"/"이상" 구간은 표기된 숫자를 그대로 쓰므로 근사치이며, "30.0mm 이상"이
+    하루 중 한 구간이라도 있었으면 실제 누적량이 더 클 수 있어 합계에 "+"를 붙인다."""
+    total = 0.0
+    open_ended = False
+    has_data = False
+    for raw in pcp_values:
+        if not raw or raw in ("강수없음", "-"):
+            continue
+        has_data = True
+        match = _PCP_NUMBER_RE.search(raw)
+        if not match:
+            continue
+        total += float(match.group(1))
+        if "이상" in raw:
+            open_ended = True
+    if not has_data:
+        return "강수없음"
+    if total == 0:
+        return "강수없음"
+    formatted = f"{total:g}mm"
+    return formatted + "+" if open_ended else formatted
 
 
 class KmaApiError(Exception):
@@ -224,7 +253,6 @@ def get_short_term_forecast(service_key, nx, ny, now=None):
     for date in sorted(by_date):
         d = by_date[date]
         pop_max = max(d["pop"]) if d["pop"] else None
-        pcp_vals = [v for v in d["pcp"] if v and v != "강수없음"]
         sky_val = d["sky"][len(d["sky"]) // 2] if d["sky"] else None
         pty_val = next((v for v in d["pty"] if v != "0"), (d["pty"][0] if d["pty"] else None))
         condition = PTY_TEXT.get(pty_val, "") if pty_val and pty_val != "0" else SKY_TEXT.get(sky_val, "")
@@ -234,7 +262,7 @@ def get_short_term_forecast(service_key, nx, ny, now=None):
                 "tmin": d["tmin"],
                 "tmax": d["tmax"],
                 "pop": pop_max,
-                "pcp": ", ".join(pcp_vals) if pcp_vals else "강수없음",
+                "pcp": _sum_daily_pcp(d["pcp"]),
                 "condition": condition,
                 "source": "단기예보",
             }
