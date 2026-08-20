@@ -2,6 +2,8 @@ import datetime
 import unittest
 from unittest.mock import patch, MagicMock
 
+import requests
+
 from weather_duty import kma_client
 
 
@@ -18,7 +20,7 @@ def _mock_response(items):
 
 
 class TestUltraSrtNcst(unittest.TestCase):
-    @patch("weather_duty.kma_client.requests.get")
+    @patch("weather_duty.kma_client._SESSION.get")
     def test_parses_temp_and_rain(self, mock_get):
         mock_get.return_value = _mock_response(
             [
@@ -34,7 +36,7 @@ class TestUltraSrtNcst(unittest.TestCase):
 
 
 class TestVilageFcst(unittest.TestCase):
-    @patch("weather_duty.kma_client.requests.get")
+    @patch("weather_duty.kma_client._SESSION.get")
     def test_groups_by_date(self, mock_get):
         items = [
             {"fcstDate": "20260819", "fcstTime": "1500", "category": "TMX", "fcstValue": "34"},
@@ -60,7 +62,7 @@ class TestVilageFcst(unittest.TestCase):
 
 
 class TestMidTermForecast(unittest.TestCase):
-    @patch("weather_duty.kma_client.requests.get")
+    @patch("weather_duty.kma_client._SESSION.get")
     def test_combines_ta_and_land(self, mock_get):
         ta_item = {"taMin3": "24", "taMax3": "33", "taMin8": "23", "taMax8": "31"}
         land_item = {
@@ -106,7 +108,7 @@ class TestWarningMatch(unittest.TestCase):
 
 
 class TestErrorHandling(unittest.TestCase):
-    @patch("weather_duty.kma_client.requests.get")
+    @patch("weather_duty.kma_client._SESSION.get")
     def test_error_result_code_raises(self, mock_get):
         resp = MagicMock()
         resp.raise_for_status = MagicMock()
@@ -119,6 +121,19 @@ class TestErrorHandling(unittest.TestCase):
         mock_get.return_value = resp
         with self.assertRaises(kma_client.KmaApiError):
             kma_client.get_current_conditions("bad-key", 60, 127)
+
+
+class TestServiceKeyRedaction(unittest.TestCase):
+    @patch("weather_duty.kma_client._SESSION.get")
+    def test_connection_error_does_not_leak_service_key(self, mock_get):
+        secret_key = "TOP-SECRET-KEY-12345"
+        mock_get.side_effect = requests.exceptions.ConnectionError(
+            f"Failed to reach https://apis.data.go.kr/x?serviceKey={secret_key}&y=1"
+        )
+        with self.assertRaises(kma_client.KmaApiError) as ctx:
+            kma_client.get_current_conditions(secret_key, 60, 127)
+        self.assertNotIn(secret_key, str(ctx.exception))
+        self.assertIn("***", str(ctx.exception))
 
 
 if __name__ == "__main__":
