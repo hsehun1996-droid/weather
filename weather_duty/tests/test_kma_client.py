@@ -64,6 +64,9 @@ class TestVilageFcst(unittest.TestCase):
         self.assertEqual(day1["condition"], "맑음")
         # 00~24시 누적: 1.0mm + 1mm(미만 표기값 그대로) = 2mm
         self.assertEqual(day1["pcp"], "2mm")
+        self.assertEqual(
+            day1["pcp_by_time"], [("0900", "1.0mm"), ("1200", "1mm 미만"), ("1500", "강수없음")]
+        )
 
         day2 = result[1]
         self.assertEqual(day2["pcp"], "30mm+")
