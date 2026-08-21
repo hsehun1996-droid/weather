@@ -47,6 +47,8 @@ class TestVilageFcst(unittest.TestCase):
             {"fcstDate": "20260819", "fcstTime": "1500", "category": "PCP", "fcstValue": "강수없음"},
             {"fcstDate": "20260819", "fcstTime": "1500", "category": "SKY", "fcstValue": "1"},
             {"fcstDate": "20260819", "fcstTime": "1500", "category": "PTY", "fcstValue": "0"},
+            {"fcstDate": "20260819", "fcstTime": "1500", "category": "TMP", "fcstValue": "31"},
+            {"fcstDate": "20260819", "fcstTime": "1500", "category": "REH", "fcstValue": "70"},
             {"fcstDate": "20260820", "fcstTime": "1500", "category": "TMX", "fcstValue": "33"},
             {"fcstDate": "20260820", "fcstTime": "0600", "category": "TMN", "fcstValue": "25"},
             {"fcstDate": "20260820", "fcstTime": "1500", "category": "PCP", "fcstValue": "30.0mm 이상"},
@@ -64,9 +66,16 @@ class TestVilageFcst(unittest.TestCase):
         self.assertEqual(day1["condition"], "맑음")
         # 00~24시 누적: 1.0mm + 1mm(미만 표기값 그대로) = 2mm
         self.assertEqual(day1["pcp"], "2mm")
-        self.assertEqual(
-            day1["pcp_by_time"], [("0900", "1.0mm"), ("1200", "1mm 미만"), ("1500", "강수없음")]
-        )
+        hourly_by_time = {h["time"]: h for h in day1["hourly"]}
+        self.assertEqual(hourly_by_time["0900"]["pcp"], "1.0mm")
+        self.assertEqual(hourly_by_time["1200"]["pcp"], "1mm 미만")
+        self.assertEqual(hourly_by_time["1500"]["pcp"], "강수없음")
+        self.assertEqual(hourly_by_time["1500"]["temp"], "31")
+        # 8월(여름)이라 열지수 공식이 쓰였는지 - 습도 없는 시간대는 None, 있는 시간대는 값이 나와야 함
+        self.assertIsNone(hourly_by_time["0900"]["feels_like"])
+        expected = kma_client.feels_like_c("31", "70", None, 8)
+        self.assertAlmostEqual(hourly_by_time["1500"]["feels_like"], expected)
+        self.assertEqual(day1["feels_like_max"], round(expected, 1))
 
         day2 = result[1]
         self.assertEqual(day2["pcp"], "30mm+")
@@ -156,6 +165,25 @@ class TestServiceKeyRedaction(unittest.TestCase):
             kma_client.get_current_conditions(secret_key, 60, 127)
         self.assertNotIn(secret_key, str(ctx.exception))
         self.assertIn("***", str(ctx.exception))
+
+
+class TestFeelsLike(unittest.TestCase):
+    def test_summer_uses_heat_index_and_needs_humidity(self):
+        self.assertIsNone(kma_client.feels_like_c(30, None, 3, 8))
+        value = kma_client.feels_like_c(30, 70, None, 8)
+        self.assertIsInstance(value, float)
+        # 무더운 날 고습도에서는 체감온도가 실제 기온보다 높게 나와야 한다
+        self.assertGreater(value, 30)
+
+    def test_winter_uses_wind_chill_and_needs_wind_speed(self):
+        self.assertIsNone(kma_client.feels_like_c(0, 60, None, 1))
+        value = kma_client.feels_like_c(0, 60, 5, 1)
+        self.assertIsInstance(value, float)
+        # 바람이 불면 겨울 체감온도는 실제 기온보다 낮게 나와야 한다
+        self.assertLess(value, 0)
+
+    def test_missing_temperature_returns_none(self):
+        self.assertIsNone(kma_client.feels_like_c(None, 70, 3, 8))
 
 
 if __name__ == "__main__":

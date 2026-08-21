@@ -14,6 +14,7 @@ data.go.kr에서 활용신청이 승인되어야 서비스키(인코딩/디코�
 신청 페이지에서 위 3개 서비스를 모두 "활용신청"해야 한다.
 """
 import datetime
+import math
 import re
 import urllib.parse
 
@@ -78,6 +79,47 @@ def _sum_daily_pcp(pcp_values):
         return "강수없음"
     formatted = f"{total:g}mm"
     return formatted + "+" if open_ended else formatted
+
+
+def _wet_bulb_c(ta, rh):
+    """Stull(2011) 근사식으로 습구온도(℃) 계산. ta=기온(℃), rh=상대습도(%)."""
+    return (
+        ta * math.atan(0.151977 * math.sqrt(rh + 8.313659))
+        + math.atan(ta + rh)
+        - math.atan(rh - 1.676331)
+        + 0.00391838 * rh ** 1.5 * math.atan(0.023101 * rh)
+        - 4.686035
+    )
+
+
+def _heat_index_c(ta, rh):
+    """여름철(5~9월) 체감온도 - 기상청이 2022년부터 쓰는 열지수 공식."""
+    tw = _wet_bulb_c(ta, rh)
+    return -0.2442 + 0.55399 * tw + 0.45535 * ta - 0.0022 * tw ** 2 + 0.00278 * tw * ta + 3.0
+
+
+def _wind_chill_c(ta, ws_ms):
+    """겨울철(10~4월) 체감온도 - 기상청 풍속냉각 공식. ws_ms=풍속(m/s)."""
+    v_kmh = ws_ms * 3.6
+    return 13.12 + 0.6215 * ta - 11.37 * (v_kmh ** 0.16) + 0.3965 * (v_kmh ** 0.16) * ta
+
+
+def feels_like_c(ta, rh, ws_ms, month):
+    """체감온도(℃) 근사치. 기상청은 5~9월엔 열지수(기온+습도) 공식, 10~4월엔
+    풍속냉각 공식을 쓴다. 필요한 입력값(습도 또는 풍속)이 없으면 None."""
+    if ta is None:
+        return None
+    try:
+        ta = float(ta)
+        if month in (5, 6, 7, 8, 9):
+            if rh is None:
+                return None
+            return _heat_index_c(ta, float(rh))
+        if ws_ms is None:
+            return None
+        return _wind_chill_c(ta, float(ws_ms))
+    except (TypeError, ValueError):
+        return None
 
 
 class KmaApiError(Exception):
@@ -229,47 +271,79 @@ def get_short_term_forecast(service_key, nx, ny, now=None):
         time = it["fcstTime"]
         category = it["category"]
         value = it["fcstValue"]
-        day = by_date.setdefault(
-            date,
-            {
-                "date": date, "tmin": None, "tmax": None, "pop": [], "pcp": [], "pcp_by_time": [],
-                "sky": [], "pty": [],
-            },
-        )
+        day = by_date.setdefault(date, {"date": date, "tmin": None, "tmax": None, "by_time": {}})
+        slot = day["by_time"].setdefault(time, {"time": time})
+
         if category == "TMN":
             day["tmin"] = value
         elif category == "TMX":
             day["tmax"] = value
-        elif category == "TMP" and time in ("0600", "1500"):
-            # TMN/TMX가 안 나오는 날짜(오늘) 보정용 참고 기온
-            day.setdefault("tmp_ref", {})[time] = value
+        elif category == "TMP":
+            slot["temp"] = value
         elif category == "POP":
-            day["pop"].append(int(value))
+            slot["pop"] = int(value)
         elif category == "PCP":
-            day["pcp"].append(value)
-            day["pcp_by_time"].append((time, value))
+            slot["pcp"] = value
+        elif category == "REH":
+            slot["reh"] = value
+        elif category == "WSD":
+            slot["wsd"] = value
         elif category == "SKY":
-            day["sky"].append(value)
+            slot["sky"] = value
         elif category == "PTY":
-            day["pty"].append(value)
+            slot["pty"] = value
 
     result = []
     for date in sorted(by_date):
         d = by_date[date]
-        pop_max = max(d["pop"]) if d["pop"] else None
-        sky_val = d["sky"][len(d["sky"]) // 2] if d["sky"] else None
-        pty_val = next((v for v in d["pty"] if v != "0"), (d["pty"][0] if d["pty"] else None))
+        month = int(date[4:6])
+        slots = [d["by_time"][t] for t in sorted(d["by_time"])]
+
+        hourly = []
+        feels_like_values = []
+        for slot in slots:
+            temp = slot.get("temp")
+            reh = slot.get("reh")
+            wsd = slot.get("wsd")
+            feels_like = feels_like_c(temp, reh, wsd, month)
+            if feels_like is not None:
+                feels_like_values.append(feels_like)
+            pty_val = slot.get("pty")
+            sky_val = slot.get("sky")
+            condition = (
+                PTY_TEXT.get(pty_val, "") if pty_val and pty_val != "0" else SKY_TEXT.get(sky_val, "")
+            )
+            hourly.append(
+                {
+                    "time": slot["time"],
+                    "temp": temp,
+                    "feels_like": feels_like,
+                    "pop": slot.get("pop"),
+                    "pcp": slot.get("pcp"),
+                    "condition": condition,
+                }
+            )
+
+        pop_vals = [s["pop"] for s in slots if s.get("pop") is not None]
+        pop_max = max(pop_vals) if pop_vals else None
+        pty_vals = [s.get("pty") for s in slots if s.get("pty") is not None]
+        sky_vals = [s.get("sky") for s in slots if s.get("sky") is not None]
+        sky_val = sky_vals[len(sky_vals) // 2] if sky_vals else None
+        pty_val = next((v for v in pty_vals if v != "0"), (pty_vals[0] if pty_vals else None))
         condition = PTY_TEXT.get(pty_val, "") if pty_val and pty_val != "0" else SKY_TEXT.get(sky_val, "")
+
         result.append(
             {
                 "date": date,
                 "tmin": d["tmin"],
                 "tmax": d["tmax"],
                 "pop": pop_max,
-                "pcp": _sum_daily_pcp(d["pcp"]),
-                "pcp_by_time": sorted(d["pcp_by_time"]),
+                "pcp": _sum_daily_pcp([s.get("pcp") for s in slots if s.get("pcp") is not None]),
                 "condition": condition,
                 "source": "단기예보",
+                "feels_like_min": round(min(feels_like_values), 1) if feels_like_values else None,
+                "feels_like_max": round(max(feels_like_values), 1) if feels_like_values else None,
+                "hourly": hourly,
             }
         )
     return result
@@ -332,6 +406,9 @@ def get_mid_term_forecast(service_key, reg_id_land, reg_id_ta, now=None):
                 "pcp": "",
                 "condition": condition,
                 "source": "중기예보",
+                "feels_like_min": None,
+                "feels_like_max": None,
+                "hourly": [],
             }
         )
     return result

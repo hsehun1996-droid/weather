@@ -88,58 +88,118 @@ def _format_fcst_time(time_str):
     return time_str or "-"
 
 
-class PcpDetailDialog(ctk.CTkToplevel):
-    """일자별 강수량 칸을 더블클릭하면 3시간 구간별 상세 내역을 보여준다."""
+def _bring_to_front(win):
+    """CTkToplevel이 메인 창 뒤에 숨어서 열리는 경우가 있어, 항상 앞으로 띄운다."""
+    win.lift()
+    win.attributes("-topmost", True)
+    win.focus_force()
+
+
+class HourlyDetailDialog(ctk.CTkToplevel):
+    """일자별 예보 칸(지역별 상세/종합보기 어느 쪽이든)을 더블클릭하면 그 날의
+    3시간 구간별 날씨/기온/체감온도/강수량/강수확률을 가로로 늘어놓은 표로 보여준다."""
 
     def __init__(self, master, region_name, day):
         super().__init__(master)
         pretty_date = day.get("date", "")
         if len(pretty_date) == 8:
             pretty_date = f"{pretty_date[:4]}-{pretty_date[4:6]}-{pretty_date[6:8]}"
-        self.title(f"{region_name} {pretty_date} 시간별 강수량")
-        self.geometry("320x420")
+        self.title(f"{region_name} {pretty_date} 시간별 예보")
+        self.configure(fg_color=COLOR_BG)
 
-        font_body = master.font_body if hasattr(master, "font_body") else None
+        font_title = getattr(master, "font_title", None)
+        font_body = getattr(master, "font_body", None)
+        font_small = getattr(master, "font_small", None)
 
         ctk.CTkLabel(
-            self, text=f"{region_name}  ·  {pretty_date}", font=font_body, text_color=COLOR_TEXT, anchor="w"
+            self, text=f"{region_name}  ·  {pretty_date} 시간별 예보", font=font_title, text_color=COLOR_TEXT,
+            anchor="w",
         ).pack(fill="x", padx=16, pady=(16, 8))
 
-        breakdown = day.get("pcp_by_time")
-        if day.get("source") == "중기예보":
+        hourly = day.get("hourly") or []
+        if day.get("source") == "중기예보" or not hourly:
+            card = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=12)
+            card.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+            reason = (
+                "중기예보(4일 이후)는 기상청이 강수확률만 제공하고,\n3시간 단위 시간별 데이터는 제공하지 않습니다."
+                if day.get("source") == "중기예보"
+                else "시간별 데이터가 없습니다."
+            )
             ctk.CTkLabel(
-                self,
-                text="중기예보(4일 이후)는 기상청이 강수확률만 제공하고, 3시간 단위\n시간별 강수량은 제공하지 않습니다.",
-                font=master.font_small, text_color=COLOR_SUBTEXT, justify="left", wraplength=280,
-            ).pack(fill="x", padx=16, pady=8)
-        elif not breakdown:
-            ctk.CTkLabel(
-                self, text="시간별 데이터가 없습니다.", font=master.font_small, text_color=COLOR_SUBTEXT,
-            ).pack(fill="x", padx=16, pady=8)
+                card, text=reason, font=font_small, text_color=COLOR_SUBTEXT, justify="left",
+            ).pack(padx=20, pady=40)
+            self.geometry("380x220")
         else:
-            list_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
-            list_frame.pack(fill="both", expand=True, padx=16, pady=8)
-            for time_str, value in breakdown:
-                row = ctk.CTkFrame(list_frame, fg_color="transparent")
-                row.pack(fill="x", pady=2)
-                ctk.CTkLabel(
-                    row, text=_format_fcst_time(time_str), font=master.font_body, text_color=COLOR_TEXT, width=60,
-                    anchor="w",
-                ).pack(side="left")
-                ctk.CTkLabel(
-                    row, text=value, font=master.font_body, text_color=COLOR_SUBTEXT, anchor="w",
-                ).pack(side="left", fill="x", expand=True)
+            row_defs = [("날씨", "condition"), ("기온", "temp"), ("체감온도", "feels_like"), ("강수량", "pcp"), ("강수확률", "pop")]
+            label_col_w = 90
+            hour_col_w = 76
 
-            total_row = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=10)
-            total_row.pack(fill="x", padx=16, pady=(0, 16))
+            table = ctk.CTkScrollableFrame(
+                self, orientation="horizontal", fg_color=COLOR_CARD, corner_radius=12, height=230
+            )
+            table.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+            ctk.CTkLabel(table, text="시각", font=font_body, text_color=COLOR_SUBTEXT, width=label_col_w, anchor="w").grid(
+                row=0, column=0, padx=(12, 8), pady=8, sticky="w"
+            )
+            for row_idx, (label, _key) in enumerate(row_defs, start=1):
+                ctk.CTkLabel(
+                    table, text=label, font=font_body, text_color=COLOR_SUBTEXT, width=label_col_w, anchor="w"
+                ).grid(row=row_idx, column=0, padx=(12, 8), pady=8, sticky="w")
+
+            for col, hour in enumerate(hourly, start=1):
+                ctk.CTkLabel(
+                    table, text=_format_fcst_time(hour.get("time")), font=font_body, text_color=COLOR_TEXT,
+                    width=hour_col_w,
+                ).grid(row=0, column=col, padx=4, pady=8)
+
+                condition_text = hour.get("condition") or "-"
+                ctk.CTkLabel(
+                    table, text=condition_text, font=font_small, text_color=COLOR_SUBTEXT, width=hour_col_w,
+                ).grid(row=1, column=col, padx=4, pady=8)
+
+                temp = hour.get("temp")
+                ctk.CTkLabel(
+                    table, text=(f"{temp}°" if temp is not None else "-"), font=font_body, text_color=COLOR_TEXT,
+                    width=hour_col_w,
+                ).grid(row=2, column=col, padx=4, pady=8)
+
+                feels_like = hour.get("feels_like")
+                ctk.CTkLabel(
+                    table, text=(f"{feels_like:.1f}°" if feels_like is not None else "-"), font=font_body,
+                    text_color=COLOR_ACCENT, width=hour_col_w,
+                ).grid(row=3, column=col, padx=4, pady=8)
+
+                pcp_val = hour.get("pcp") or "-"
+                ctk.CTkLabel(
+                    table, text=pcp_val, font=font_small, text_color=COLOR_SUBTEXT, width=hour_col_w,
+                ).grid(row=4, column=col, padx=4, pady=8)
+
+                pop_val = hour.get("pop")
+                ctk.CTkLabel(
+                    table, text=(f"{pop_val}%" if pop_val is not None else "-"), font=font_small,
+                    text_color=_pop_color(pop_val), width=hour_col_w,
+                ).grid(row=5, column=col, padx=4, pady=8)
+
+            summary_bits = [f"00~24시 누적 강수량: {day.get('pcp') or '강수없음'}"]
+            if day.get("tmin") is not None or day.get("tmax") is not None:
+                summary_bits.append(f"기온 {day.get('tmin', '-')}° / {day.get('tmax', '-')}°")
+            if day.get("feels_like_min") is not None:
+                summary_bits.append(f"체감 {day['feels_like_min']}° / {day['feels_like_max']}°")
+
+            summary_card = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=10)
+            summary_card.pack(fill="x", padx=16, pady=(0, 8))
             ctk.CTkLabel(
-                total_row, text=f"00~24시 누적: {day.get('pcp') or '강수없음'}", font=master.font_body,
-                text_color=COLOR_TEXT,
+                summary_card, text="   |   ".join(summary_bits), font=font_body, text_color=COLOR_TEXT,
             ).pack(padx=12, pady=10)
+
+            self.geometry("760x420")
 
         ctk.CTkButton(self, text="닫기", fg_color="transparent", border_width=1, command=self.destroy).pack(
             pady=(0, 16)
         )
+
+        _bring_to_front(self)
 
 
 class RegionManagerDialog(ctk.CTkToplevel):
@@ -180,6 +240,7 @@ class RegionManagerDialog(ctk.CTkToplevel):
 
         self.check_vars = {}
         self._render_results()
+        _bring_to_front(self)
 
     def _current_matches(self):
         query = self.search_var.get().strip()
@@ -278,6 +339,8 @@ class CustomRegionForm(ctk.CTkToplevel):
             side="right", padx=8
         )
 
+        _bring_to_front(self)
+
     def _save(self):
         name = self.vars["name"].get().strip()
         try:
@@ -330,6 +393,7 @@ class BranchManagerDialog(ctk.CTkToplevel):
         )
 
         self._render()
+        _bring_to_front(self)
 
     def _render(self):
         for widget in self.list_frame.winfo_children():
@@ -449,6 +513,8 @@ class SettingsDialog(ctk.CTkToplevel):
         ctk.CTkButton(btn_row, text="취소", fg_color="transparent", border_width=1, command=self.destroy).pack(
             side="right", padx=8
         )
+
+        _bring_to_front(self)
 
     def _toggle_show(self):
         self.entry.configure(show="" if self.show_var.get() else "*")
@@ -809,47 +875,67 @@ class WeatherDutyApp(ctk.CTk):
             return
 
         for day in days:
-            row = ctk.CTkFrame(self.forecast_frame, fg_color="transparent")
+            row = ctk.CTkFrame(self.forecast_frame, fg_color="transparent", cursor="hand2")
             row.pack(fill="x", padx=16, pady=8)
+            row_widgets = [row]
 
             date_str = day.get("date") or ""
             pretty_date = f"{date_str[4:6]}/{date_str[6:8]}" if len(date_str) == 8 else date_str
 
-            ctk.CTkLabel(row, text=pretty_date, font=self.font_body, text_color=COLOR_TEXT, width=60, anchor="w").pack(
-                side="left"
+            row_widgets.append(
+                ctk.CTkLabel(row, text=pretty_date, font=self.font_body, text_color=COLOR_TEXT, width=60, anchor="w")
             )
-            ctk.CTkLabel(
-                row, text=day.get("condition") or "-", font=self.font_body, text_color=COLOR_SUBTEXT, width=140,
-                anchor="w",
-            ).pack(side="left")
+            row_widgets.append(
+                ctk.CTkLabel(
+                    row, text=day.get("condition") or "-", font=self.font_body, text_color=COLOR_SUBTEXT, width=130,
+                    anchor="w",
+                )
+            )
 
             pop = day.get("pop")
             pop_text = f"강수확률 {pop}%" if pop is not None else "강수확률 -"
-            ctk.CTkLabel(row, text=pop_text, font=self.font_small, text_color=_pop_color(pop), width=90, anchor="w").pack(
-                side="left"
+            row_widgets.append(
+                ctk.CTkLabel(row, text=pop_text, font=self.font_small, text_color=_pop_color(pop), width=90, anchor="w")
             )
 
-            pcp_label = ctk.CTkLabel(
-                row, text=f"강수량 {_pcp_display_text(day)}", font=self.font_small, text_color=COLOR_SUBTEXT,
-                width=170, anchor="w", cursor="hand2",
+            row_widgets.append(
+                ctk.CTkLabel(
+                    row, text=f"강수량 {_pcp_display_text(day)}", font=self.font_small, text_color=COLOR_SUBTEXT,
+                    width=170, anchor="w",
+                )
             )
-            pcp_label.pack(side="left")
-            pcp_label.bind("<Double-Button-1>", lambda _e, d=day: self._open_pcp_detail(region_name, d))
 
             tmin, tmax = day.get("tmin"), day.get("tmax")
             temp_text = f"{tmin}° / {tmax}°" if (tmin or tmax) else "-"
-            ctk.CTkLabel(row, text=temp_text, font=self.font_body, text_color=COLOR_TEXT, width=110, anchor="e").pack(
-                side="right"
-            )
-            ctk.CTkLabel(
+            fl_min, fl_max = day.get("feels_like_min"), day.get("feels_like_max")
+            feels_text = f"체감 {fl_min}° / {fl_max}°" if fl_min is not None else ""
+
+            for widget in row_widgets[1:]:
+                widget.pack(side="left")
+            if feels_text:
+                row_widgets.append(
+                    ctk.CTkLabel(row, text=feels_text, font=self.font_small, text_color=COLOR_ACCENT, anchor="w")
+                )
+                row_widgets[-1].pack(side="left", padx=(8, 0))
+
+            source_label = ctk.CTkLabel(
                 row, text=day.get("source") or "", font=self.font_small, text_color=COLOR_SUBTEXT, width=70,
                 anchor="e",
-            ).pack(side="right", padx=(0, 8))
+            )
+            source_label.pack(side="right", padx=(0, 8))
+            row_widgets.append(source_label)
+
+            temp_label = ctk.CTkLabel(row, text=temp_text, font=self.font_body, text_color=COLOR_TEXT, width=110, anchor="e")
+            temp_label.pack(side="right")
+            row_widgets.append(temp_label)
+
+            for widget in row_widgets:
+                widget.bind("<Double-Button-1>", lambda _e, d=day: self._open_hourly_detail(region_name, d))
 
             ctk.CTkFrame(self.forecast_frame, fg_color=COLOR_BORDER, height=1).pack(fill="x", padx=16)
 
-    def _open_pcp_detail(self, region_name, day):
-        PcpDetailDialog(self, region_name, day)
+    def _open_hourly_detail(self, region_name, day):
+        HourlyDetailDialog(self, region_name, day)
 
     # ---------- rendering: summary view (지사별로 묶어 날짜 하나를 골라 비교) ----------
     def _all_summary_dates(self, favorites):
@@ -919,25 +1005,20 @@ class WeatherDutyApp(ctk.CTk):
         if unassigned:
             groups.append(("미분류", unassigned))
 
-        branch_col_w, name_col_w, pop_col_w, pcp_col_w = 110, 190, 90, 130
-        ctk.CTkLabel(
-            self.summary_frame, text="지사", font=self.font_body, text_color=COLOR_SUBTEXT, width=branch_col_w,
-            anchor="w",
-        ).grid(row=0, column=0, padx=(16, 4), pady=(16, 8), sticky="w")
-        ctk.CTkLabel(
-            self.summary_frame, text="지역", font=self.font_body, text_color=COLOR_SUBTEXT, width=name_col_w,
-            anchor="w",
-        ).grid(row=0, column=1, padx=4, pady=(16, 8), sticky="w")
-        ctk.CTkLabel(
-            self.summary_frame, text="강수확률", font=self.font_body, text_color=COLOR_SUBTEXT, width=pop_col_w,
-        ).grid(row=0, column=2, padx=4, pady=(16, 8))
-        ctk.CTkLabel(
-            self.summary_frame, text="강수량(00~24시 누적)", font=self.font_body, text_color=COLOR_SUBTEXT,
-            width=pcp_col_w,
-        ).grid(row=0, column=3, padx=4, pady=(16, 8))
-        ctk.CTkLabel(
-            self.summary_frame, text="특보", font=self.font_body, text_color=COLOR_SUBTEXT, width=60,
-        ).grid(row=0, column=4, padx=(4, 16), pady=(16, 8))
+        branch_col_w, name_col_w, temp_col_w, feels_col_w, pop_col_w, pcp_col_w, warn_col_w = (
+            100, 180, 90, 100, 80, 120, 55,
+        )
+        headers = [
+            ("지사", branch_col_w, "w"), ("지역", name_col_w, "w"), ("최저/최고", temp_col_w, "center"),
+            ("체감 최저/최고", feels_col_w, "center"), ("강수확률", pop_col_w, "center"),
+            ("강수량(00~24시 누적)", pcp_col_w, "center"), ("특보", warn_col_w, "center"),
+        ]
+        for col, (label, width, anchor) in enumerate(headers):
+            ctk.CTkLabel(
+                self.summary_frame, text=label, font=self.font_body, text_color=COLOR_SUBTEXT, width=width,
+                anchor=anchor,
+            ).grid(row=0, column=col, padx=(16 if col == 0 else 4, 16 if col == len(headers) - 1 else 4),
+                   pady=(16, 8), sticky=("w" if anchor == "w" else ""))
 
         row_idx = 1
         for branch_name, members in groups:
@@ -966,20 +1047,44 @@ class WeatherDutyApp(ctk.CTk):
                 is_best = region_name == best_name and best_amount > 0
 
                 row_bg = COLOR_WARN_BG if is_best else "transparent"
+                emph_color = COLOR_WARN_TEXT if is_best else COLOR_TEXT
+                row_cells = []
 
                 name_text = ("조회 중… " + region_name) if is_loading else region_name
-                ctk.CTkLabel(
-                    self.summary_frame, text=name_text, font=self.font_body,
-                    text_color=(COLOR_WARN_TEXT if is_best else COLOR_TEXT), width=name_col_w, anchor="w",
-                    fg_color=row_bg, corner_radius=6,
-                ).grid(row=row_idx, column=1, padx=4, pady=3, sticky="ew", ipady=3)
+                row_cells.append(ctk.CTkLabel(
+                    self.summary_frame, text=name_text, font=self.font_body, text_color=emph_color,
+                    width=name_col_w, anchor="w", fg_color=row_bg, corner_radius=6, cursor=("hand2" if day else "arrow"),
+                ))
+                row_cells[-1].grid(row=row_idx, column=1, padx=4, pady=3, sticky="ew", ipady=3)
+
+                tmin, tmax = (day.get("tmin"), day.get("tmax")) if day else (None, None)
+                temp_text = f"{tmin}°/{tmax}°" if (tmin is not None or tmax is not None) else "-"
+                row_cells.append(ctk.CTkLabel(
+                    self.summary_frame, text=temp_text, font=self.font_small, text_color=COLOR_TEXT,
+                    width=temp_col_w, fg_color=row_bg, corner_radius=6, cursor=("hand2" if day else "arrow"),
+                ))
+                row_cells[-1].grid(row=row_idx, column=2, padx=4, pady=3, ipady=3)
+
+                fl_min, fl_max = (day.get("feels_like_min"), day.get("feels_like_max")) if day else (None, None)
+                if fl_min is not None:
+                    feels_text = f"{fl_min}°/{fl_max}°"
+                elif day and day.get("source") == "중기예보":
+                    feels_text = "중기예보만"
+                else:
+                    feels_text = "-"
+                row_cells.append(ctk.CTkLabel(
+                    self.summary_frame, text=feels_text, font=self.font_small, text_color=COLOR_ACCENT,
+                    width=feels_col_w, fg_color=row_bg, corner_radius=6, cursor=("hand2" if day else "arrow"),
+                ))
+                row_cells[-1].grid(row=row_idx, column=3, padx=4, pady=3, ipady=3)
 
                 pop = day.get("pop") if day else None
                 pop_text = f"{pop}%" if pop is not None else "-"
-                ctk.CTkLabel(
+                row_cells.append(ctk.CTkLabel(
                     self.summary_frame, text=pop_text, font=self.font_small, text_color=_pop_color(pop),
-                    width=pop_col_w, fg_color=row_bg, corner_radius=6,
-                ).grid(row=row_idx, column=2, padx=4, pady=3, ipady=3)
+                    width=pop_col_w, fg_color=row_bg, corner_radius=6, cursor=("hand2" if day else "arrow"),
+                ))
+                row_cells[-1].grid(row=row_idx, column=4, padx=4, pady=3, ipady=3)
 
                 if day is None:
                     pcp_text = "-"
@@ -989,21 +1094,26 @@ class WeatherDutyApp(ctk.CTk):
                     pcp_text = "중기예보만"
                 else:
                     pcp_text = "강수없음"
-                pcp_cell = ctk.CTkLabel(
+                row_cells.append(ctk.CTkLabel(
                     self.summary_frame, text=pcp_text,
                     font=ctk.CTkFont(family=self.font_body.cget("family"), size=13, weight=("bold" if is_best else "normal")),
-                    text_color=(COLOR_WARN_TEXT if is_best else COLOR_TEXT), width=pcp_col_w, fg_color=row_bg,
+                    text_color=emph_color, width=pcp_col_w, fg_color=row_bg,
                     corner_radius=6, cursor=("hand2" if day else "arrow"),
-                )
-                pcp_cell.grid(row=row_idx, column=3, padx=4, pady=3, ipady=3)
-                if day:
-                    pcp_cell.bind("<Double-Button-1>", lambda _e, n=region_name, d=day: self._open_pcp_detail(n, d))
+                ))
+                row_cells[-1].grid(row=row_idx, column=5, padx=4, pady=3, ipady=3)
 
                 warn_text = "⚠" if (report and report.get("warnings")) else ""
-                ctk.CTkLabel(
-                    self.summary_frame, text=warn_text, font=self.font_small, text_color=COLOR_WARN_TEXT, width=60,
-                    fg_color=row_bg, corner_radius=6,
-                ).grid(row=row_idx, column=4, padx=(4, 16), pady=3, ipady=3)
+                row_cells.append(ctk.CTkLabel(
+                    self.summary_frame, text=warn_text, font=self.font_small, text_color=COLOR_WARN_TEXT,
+                    width=warn_col_w, fg_color=row_bg, corner_radius=6, cursor=("hand2" if day else "arrow"),
+                ))
+                row_cells[-1].grid(row=row_idx, column=6, padx=(4, 16), pady=3, ipady=3)
+
+                if day:
+                    for cell in row_cells:
+                        cell.bind(
+                            "<Double-Button-1>", lambda _e, n=region_name, d=day: self._open_hourly_detail(n, d)
+                        )
 
                 row_idx += 1
 
