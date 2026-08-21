@@ -95,6 +95,36 @@ def _bring_to_front(win):
     win.focus_force()
 
 
+def _enable_horizontal_wheel_scroll(scrollable_frame):
+    """CTkScrollableFrame(orientation="horizontal")의 마우스휠 스크롤은 기본적으로
+    스크롤바 위에 있을 때만 확실히 동작한다(내부적으로 bind_all 로 전역 바인딩을
+    하긴 하지만, 안에 들어찬 CTkLabel 등 자식 위젯 위에서는 걸리지 않는 경우가
+    있음). 창 안 어디서든 휠로 가로 스크롤이 되도록, 자식 위젯 전체에 직접
+    바인딩한다."""
+    canvas = scrollable_frame._parent_canvas
+
+    def _on_wheel(event):
+        if getattr(event, "num", None) == 4:
+            canvas.xview_scroll(-2, "units")
+        elif getattr(event, "num", None) == 5:
+            canvas.xview_scroll(2, "units")
+        else:
+            delta = getattr(event, "delta", 0)
+            canvas.xview_scroll(-2 if delta > 0 else 2, "units")
+        return "break"
+
+    def _bind(widget):
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            try:
+                widget.bind(seq, _on_wheel, add="+")
+            except Exception:  # noqa: BLE001 - 일부 내부 위젯은 바인딩을 못 받을 수 있음
+                pass
+
+    _bind(scrollable_frame)
+    for child in scrollable_frame.winfo_children():
+        _bind(child)
+
+
 class HourlyDetailDialog(ctk.CTkToplevel):
     """일자별 예보 칸(지역별 상세/종합보기 어느 쪽이든)을 더블클릭하면 그 날의
     3시간 구간별 날씨/기온/체감온도/강수량/강수확률을 가로로 늘어놓은 표로 보여준다."""
@@ -194,6 +224,7 @@ class HourlyDetailDialog(ctk.CTkToplevel):
             ).pack(padx=12, pady=10)
 
             self.geometry("760x420")
+            _enable_horizontal_wheel_scroll(table)
 
         ctk.CTkButton(self, text="닫기", fg_color="transparent", border_width=1, command=self.destroy).pack(
             pady=(0, 16)
