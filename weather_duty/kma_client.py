@@ -248,11 +248,17 @@ def get_current_conditions(service_key, nx, ny, now=None):
     }
 
 
-def get_short_term_forecast(service_key, nx, ny, now=None):
-    """단기예보: 오늘부터 최대 모레/글피까지 일자별 최저/최고기온, 강수확률,
-    강수량, 하늘상태를 날짜별로 묶어서 반환."""
-    base_date, base_time = _base_datetime_for_vilage(now)
-    items = _get(
+def _base_datetime_for_today_full_day(now=None):
+    """당일(오늘) 00~24시를 전부 포함하는 가장 이른 발표시각(전날 23시)을 반환.
+    최신 발표(base_time)만 쓰면 발표시각 이전 구간(예: 오늘 00~14시)이 빠져,
+    당일 누적강수량/체감온도/기온이 "지금부터 24시까지"만 반영된 값이 되는 문제가 있다."""
+    now = now or datetime.datetime.now()
+    yesterday = now.date() - datetime.timedelta(days=1)
+    return yesterday.strftime("%Y%m%d"), "2300"
+
+
+def _fetch_vilage_items(service_key, base_date, base_time, nx, ny):
+    return _get(
         f"{BASE_VILAGE}/getVilageFcst",
         service_key,
         {
@@ -265,6 +271,8 @@ def get_short_term_forecast(service_key, nx, ny, now=None):
         },
     )
 
+
+def _group_vilage_items_by_date(items):
     by_date = {}
     for it in items:
         date = it["fcstDate"]
@@ -292,61 +300,91 @@ def get_short_term_forecast(service_key, nx, ny, now=None):
             slot["sky"] = value
         elif category == "PTY":
             slot["pty"] = value
+    return by_date
 
-    result = []
-    for date in sorted(by_date):
-        d = by_date[date]
-        month = int(date[4:6])
-        slots = [d["by_time"][t] for t in sorted(d["by_time"])]
 
-        hourly = []
-        feels_like_values = []
-        for slot in slots:
-            temp = slot.get("temp")
-            reh = slot.get("reh")
-            wsd = slot.get("wsd")
-            feels_like = feels_like_c(temp, reh, wsd, month)
-            if feels_like is not None:
-                feels_like_values.append(feels_like)
-            pty_val = slot.get("pty")
-            sky_val = slot.get("sky")
-            condition = (
-                PTY_TEXT.get(pty_val, "") if pty_val and pty_val != "0" else SKY_TEXT.get(sky_val, "")
-            )
-            hourly.append(
-                {
-                    "time": slot["time"],
-                    "temp": temp,
-                    "feels_like": feels_like,
-                    "pop": slot.get("pop"),
-                    "pcp": slot.get("pcp"),
-                    "condition": condition,
-                }
-            )
+def _build_day_entry(date, day_data):
+    month = int(date[4:6])
+    slots = [day_data["by_time"][t] for t in sorted(day_data["by_time"])]
 
-        pop_vals = [s["pop"] for s in slots if s.get("pop") is not None]
-        pop_max = max(pop_vals) if pop_vals else None
-        pty_vals = [s.get("pty") for s in slots if s.get("pty") is not None]
-        sky_vals = [s.get("sky") for s in slots if s.get("sky") is not None]
-        sky_val = sky_vals[len(sky_vals) // 2] if sky_vals else None
-        pty_val = next((v for v in pty_vals if v != "0"), (pty_vals[0] if pty_vals else None))
-        condition = PTY_TEXT.get(pty_val, "") if pty_val and pty_val != "0" else SKY_TEXT.get(sky_val, "")
-
-        result.append(
+    hourly = []
+    feels_like_values = []
+    for slot in slots:
+        temp = slot.get("temp")
+        reh = slot.get("reh")
+        wsd = slot.get("wsd")
+        feels_like = feels_like_c(temp, reh, wsd, month)
+        if feels_like is not None:
+            feels_like_values.append(feels_like)
+        pty_val = slot.get("pty")
+        sky_val = slot.get("sky")
+        condition = (
+            PTY_TEXT.get(pty_val, "") if pty_val and pty_val != "0" else SKY_TEXT.get(sky_val, "")
+        )
+        hourly.append(
             {
-                "date": date,
-                "tmin": d["tmin"],
-                "tmax": d["tmax"],
-                "pop": pop_max,
-                "pcp": _sum_daily_pcp([s.get("pcp") for s in slots if s.get("pcp") is not None]),
+                "time": slot["time"],
+                "temp": temp,
+                "feels_like": feels_like,
+                "pop": slot.get("pop"),
+                "pcp": slot.get("pcp"),
                 "condition": condition,
-                "source": "단기예보",
-                "feels_like_min": round(min(feels_like_values), 1) if feels_like_values else None,
-                "feels_like_max": round(max(feels_like_values), 1) if feels_like_values else None,
-                "hourly": hourly,
             }
         )
+
+    pop_vals = [s["pop"] for s in slots if s.get("pop") is not None]
+    pop_max = max(pop_vals) if pop_vals else None
+    pty_vals = [s.get("pty") for s in slots if s.get("pty") is not None]
+    sky_vals = [s.get("sky") for s in slots if s.get("sky") is not None]
+    sky_val = sky_vals[len(sky_vals) // 2] if sky_vals else None
+    pty_val = next((v for v in pty_vals if v != "0"), (pty_vals[0] if pty_vals else None))
+    condition = PTY_TEXT.get(pty_val, "") if pty_val and pty_val != "0" else SKY_TEXT.get(sky_val, "")
+
+    return {
+        "date": date,
+        "tmin": day_data["tmin"],
+        "tmax": day_data["tmax"],
+        "pop": pop_max,
+        "pcp": _sum_daily_pcp([s.get("pcp") for s in slots if s.get("pcp") is not None]),
+        "condition": condition,
+        "source": "단기예보",
+        "feels_like_min": round(min(feels_like_values), 1) if feels_like_values else None,
+        "feels_like_max": round(max(feels_like_values), 1) if feels_like_values else None,
+        "hourly": hourly,
+    }
+
+
+def get_short_term_forecast(service_key, nx, ny, now=None):
+    """단기예보: 오늘부터 최대 모레/글피까지 일자별 최저/최고기온, 강수확률,
+    강수량, 하늘상태를 날짜별로 묶어서 반환.
+
+    당일(오늘) 항목은 최신 발표 대신, 오늘 00시를 포함하는 가장 이른 발표(전날 23시)를
+    별도로 조회해 00~24시 전체 기준으로 교체한다. (다른 날짜는 최신 발표 그대로 사용)"""
+    now = now or datetime.datetime.now()
+    base_date, base_time = _base_datetime_for_vilage(now)
+    items = _fetch_vilage_items(service_key, base_date, base_time, nx, ny)
+    by_date = _group_vilage_items_by_date(items)
+    result = [_build_day_entry(date, by_date[date]) for date in sorted(by_date)]
+
+    today = now.strftime("%Y%m%d")
+    anchor_date, anchor_time = _base_datetime_for_today_full_day(now)
+    if today in by_date and (base_date, base_time) != (anchor_date, anchor_time):
+        try:
+            anchor_items = _fetch_vilage_items(service_key, anchor_date, anchor_time, nx, ny)
+            anchor_by_date = _group_vilage_items_by_date(anchor_items)
+            if today in anchor_by_date:
+                today_entry = _build_day_entry(today, anchor_by_date[today])
+                result = [today_entry if d["date"] == today else d for d in result]
+        except KmaApiError:
+            pass  # 조회 실패 시 최신 발표 기준(부분 구간) 값을 그대로 둔다
+
     return result
+
+
+def sum_pcp_range(pcp_values):
+    """주어진 3시간 구간별 강수량 문자열들을 하나의 누적값 문구로 합산.
+    (지사별 시간대 선택 누적강수량 비교에서 사용)"""
+    return _sum_daily_pcp(pcp_values)
 
 
 def get_mid_term_forecast(service_key, reg_id_land, reg_id_ta, now=None):
