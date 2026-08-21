@@ -67,6 +67,81 @@ def _pcp_numeric(pcp_str):
     return float(match.group(1)) if match else 0.0
 
 
+def _pcp_display_text(day):
+    """강수량 칸에 보여줄 문구.
+    - 단기예보(강수량 데이터 있음): "3mm" 같은 실제 값 또는 "강수없음"
+    - 중기예보(원래 강수량 없이 확률만 제공): 값이 없는게 API 한계라는 걸 명시
+    - 데이터 자체가 없음(조회 중/실패): "-" """
+    if day is None:
+        return "-"
+    pcp = day.get("pcp")
+    if pcp:
+        return pcp
+    if day.get("source") == "중기예보":
+        return "중기예보(강수량 미제공)"
+    return "강수없음" if day.get("pop") is not None else "-"
+
+
+def _format_fcst_time(time_str):
+    if time_str and len(time_str) >= 2:
+        return f"{time_str[:2]}시"
+    return time_str or "-"
+
+
+class PcpDetailDialog(ctk.CTkToplevel):
+    """일자별 강수량 칸을 더블클릭하면 3시간 구간별 상세 내역을 보여준다."""
+
+    def __init__(self, master, region_name, day):
+        super().__init__(master)
+        pretty_date = day.get("date", "")
+        if len(pretty_date) == 8:
+            pretty_date = f"{pretty_date[:4]}-{pretty_date[4:6]}-{pretty_date[6:8]}"
+        self.title(f"{region_name} {pretty_date} 시간별 강수량")
+        self.geometry("320x420")
+
+        font_body = master.font_body if hasattr(master, "font_body") else None
+
+        ctk.CTkLabel(
+            self, text=f"{region_name}  ·  {pretty_date}", font=font_body, text_color=COLOR_TEXT, anchor="w"
+        ).pack(fill="x", padx=16, pady=(16, 8))
+
+        breakdown = day.get("pcp_by_time")
+        if day.get("source") == "중기예보":
+            ctk.CTkLabel(
+                self,
+                text="중기예보(4일 이후)는 기상청이 강수확률만 제공하고, 3시간 단위\n시간별 강수량은 제공하지 않습니다.",
+                font=master.font_small, text_color=COLOR_SUBTEXT, justify="left", wraplength=280,
+            ).pack(fill="x", padx=16, pady=8)
+        elif not breakdown:
+            ctk.CTkLabel(
+                self, text="시간별 데이터가 없습니다.", font=master.font_small, text_color=COLOR_SUBTEXT,
+            ).pack(fill="x", padx=16, pady=8)
+        else:
+            list_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
+            list_frame.pack(fill="both", expand=True, padx=16, pady=8)
+            for time_str, value in breakdown:
+                row = ctk.CTkFrame(list_frame, fg_color="transparent")
+                row.pack(fill="x", pady=2)
+                ctk.CTkLabel(
+                    row, text=_format_fcst_time(time_str), font=master.font_body, text_color=COLOR_TEXT, width=60,
+                    anchor="w",
+                ).pack(side="left")
+                ctk.CTkLabel(
+                    row, text=value, font=master.font_body, text_color=COLOR_SUBTEXT, anchor="w",
+                ).pack(side="left", fill="x", expand=True)
+
+            total_row = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=10)
+            total_row.pack(fill="x", padx=16, pady=(0, 16))
+            ctk.CTkLabel(
+                total_row, text=f"00~24시 누적: {day.get('pcp') or '강수없음'}", font=master.font_body,
+                text_color=COLOR_TEXT,
+            ).pack(padx=12, pady=10)
+
+        ctk.CTkButton(self, text="닫기", fg_color="transparent", border_width=1, command=self.destroy).pack(
+            pady=(0, 16)
+        )
+
+
 class RegionManagerDialog(ctk.CTkToplevel):
     def __init__(self, master, on_change):
         super().__init__(master)
@@ -721,9 +796,9 @@ class WeatherDutyApp(ctk.CTk):
                 text_color=COLOR_OK_TEXT,
             )
 
-        self._render_forecast(report.get("forecast", []))
+        self._render_forecast(name, report.get("forecast", []))
 
-    def _render_forecast(self, days):
+    def _render_forecast(self, region_name, days):
         for widget in self.forecast_frame.winfo_children():
             widget.destroy()
 
@@ -754,11 +829,12 @@ class WeatherDutyApp(ctk.CTk):
                 side="left"
             )
 
-            pcp = day.get("pcp")
-            pcp_text = f"강수량 {pcp}" if pcp else ("강수량 -" if pop is not None else "")
-            ctk.CTkLabel(
-                row, text=pcp_text, font=self.font_small, text_color=COLOR_SUBTEXT, width=130, anchor="w"
-            ).pack(side="left")
+            pcp_label = ctk.CTkLabel(
+                row, text=f"강수량 {_pcp_display_text(day)}", font=self.font_small, text_color=COLOR_SUBTEXT,
+                width=170, anchor="w", cursor="hand2",
+            )
+            pcp_label.pack(side="left")
+            pcp_label.bind("<Double-Button-1>", lambda _e, d=day: self._open_pcp_detail(region_name, d))
 
             tmin, tmax = day.get("tmin"), day.get("tmax")
             temp_text = f"{tmin}° / {tmax}°" if (tmin or tmax) else "-"
@@ -771,6 +847,9 @@ class WeatherDutyApp(ctk.CTk):
             ).pack(side="right", padx=(0, 8))
 
             ctk.CTkFrame(self.forecast_frame, fg_color=COLOR_BORDER, height=1).pack(fill="x", padx=16)
+
+    def _open_pcp_detail(self, region_name, day):
+        PcpDetailDialog(self, region_name, day)
 
     # ---------- rendering: summary view (지사별로 묶어 날짜 하나를 골라 비교) ----------
     def _all_summary_dates(self, favorites):
@@ -902,13 +981,23 @@ class WeatherDutyApp(ctk.CTk):
                     width=pop_col_w, fg_color=row_bg, corner_radius=6,
                 ).grid(row=row_idx, column=2, padx=4, pady=3, ipady=3)
 
-                pcp_text = (day.get("pcp") or "-") if day else "-"
-                ctk.CTkLabel(
+                if day is None:
+                    pcp_text = "-"
+                elif day.get("pcp"):
+                    pcp_text = day.get("pcp")
+                elif day.get("source") == "중기예보":
+                    pcp_text = "중기예보만"
+                else:
+                    pcp_text = "강수없음"
+                pcp_cell = ctk.CTkLabel(
                     self.summary_frame, text=pcp_text,
                     font=ctk.CTkFont(family=self.font_body.cget("family"), size=13, weight=("bold" if is_best else "normal")),
                     text_color=(COLOR_WARN_TEXT if is_best else COLOR_TEXT), width=pcp_col_w, fg_color=row_bg,
-                    corner_radius=6,
-                ).grid(row=row_idx, column=3, padx=4, pady=3, ipady=3)
+                    corner_radius=6, cursor=("hand2" if day else "arrow"),
+                )
+                pcp_cell.grid(row=row_idx, column=3, padx=4, pady=3, ipady=3)
+                if day:
+                    pcp_cell.bind("<Double-Button-1>", lambda _e, n=region_name, d=day: self._open_pcp_detail(n, d))
 
                 warn_text = "⚠" if (report and report.get("warnings")) else ""
                 ctk.CTkLabel(

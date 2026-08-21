@@ -231,7 +231,10 @@ def get_short_term_forecast(service_key, nx, ny, now=None):
         value = it["fcstValue"]
         day = by_date.setdefault(
             date,
-            {"date": date, "tmin": None, "tmax": None, "pop": [], "pcp": [], "sky": [], "pty": []},
+            {
+                "date": date, "tmin": None, "tmax": None, "pop": [], "pcp": [], "pcp_by_time": [],
+                "sky": [], "pty": [],
+            },
         )
         if category == "TMN":
             day["tmin"] = value
@@ -244,6 +247,7 @@ def get_short_term_forecast(service_key, nx, ny, now=None):
             day["pop"].append(int(value))
         elif category == "PCP":
             day["pcp"].append(value)
+            day["pcp_by_time"].append((time, value))
         elif category == "SKY":
             day["sky"].append(value)
         elif category == "PTY":
@@ -263,6 +267,7 @@ def get_short_term_forecast(service_key, nx, ny, now=None):
                 "tmax": d["tmax"],
                 "pop": pop_max,
                 "pcp": _sum_daily_pcp(d["pcp"]),
+                "pcp_by_time": sorted(d["pcp_by_time"]),
                 "condition": condition,
                 "source": "단기예보",
             }
