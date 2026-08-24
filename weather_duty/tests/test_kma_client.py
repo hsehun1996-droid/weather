@@ -80,6 +80,46 @@ class TestVilageFcst(unittest.TestCase):
         day2 = result[1]
         self.assertEqual(day2["pcp"], "30mm+")
 
+    @patch("weather_duty.kma_client._SESSION.get")
+    def test_today_uses_full_00_to_24_window_even_after_base_time(self, mock_get):
+        """최신 발표(base_time=1400)만 쓰면 오늘 새벽(0300) 강수량이 빠진다.
+        전날 23시 발표를 따로 조회해 오늘 항목만 00~24시 전체로 교체해야 한다."""
+        latest_items = [
+            # 최신 발표(오늘 14시)에는 이미 지나간 새벽 시간대가 없음
+            {"fcstDate": "20260819", "fcstTime": "1500", "category": "PCP", "fcstValue": "강수없음"},
+            {"fcstDate": "20260819", "fcstTime": "1500", "category": "TMX", "fcstValue": "34"},
+            {"fcstDate": "20260819", "fcstTime": "0600", "category": "TMN", "fcstValue": "26"},
+            {"fcstDate": "20260820", "fcstTime": "1500", "category": "PCP", "fcstValue": "5.0mm"},
+        ]
+        anchor_items = [
+            # 전날 23시 발표는 오늘 00시부터 포함하므로 새벽 강수량이 들어있음
+            {"fcstDate": "20260819", "fcstTime": "0300", "category": "PCP", "fcstValue": "1.0mm"},
+            {"fcstDate": "20260819", "fcstTime": "1500", "category": "PCP", "fcstValue": "강수없음"},
+            {"fcstDate": "20260819", "fcstTime": "1500", "category": "TMX", "fcstValue": "34"},
+            {"fcstDate": "20260819", "fcstTime": "0600", "category": "TMN", "fcstValue": "26"},
+        ]
+
+        def side_effect(url, timeout):
+            if "base_time=1400" in url:
+                return _mock_response(latest_items)
+            self.assertIn("base_time=2300", url)
+            self.assertIn("base_date=20260818", url)
+            return _mock_response(anchor_items)
+
+        mock_get.side_effect = side_effect
+        result = kma_client.get_short_term_forecast(
+            "dummy-key", 60, 127, now=datetime.datetime(2026, 8, 19, 15, 20)
+        )
+
+        day1 = next(d for d in result if d["date"] == "20260819")
+        self.assertEqual(day1["pcp"], "1mm")  # 새벽 강수량이 포함된 00~24시 전체 합계
+        hourly_by_time = {h["time"]: h for h in day1["hourly"]}
+        self.assertIn("0300", hourly_by_time)  # 지나간 시간대도 시간별 표에 남아있어야 함
+
+        # 오늘이 아닌 날짜(모레)는 최신 발표 값 그대로 사용
+        day2 = next(d for d in result if d["date"] == "20260820")
+        self.assertEqual(day2["pcp"], "5mm")
+
 
 class TestDailyPcpSum(unittest.TestCase):
     def test_all_no_rain_is_no_rain(self):

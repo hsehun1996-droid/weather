@@ -95,6 +95,36 @@ def _bring_to_front(win):
     win.focus_force()
 
 
+def _enable_horizontal_wheel_scroll(scrollable_frame):
+    """CTkScrollableFrame(orientation="horizontal")의 마우스휠 스크롤은 기본적으로
+    스크롤바 위에 있을 때만 확실히 동작한다(내부적으로 bind_all 로 전역 바인딩을
+    하긴 하지만, 안에 들어찬 CTkLabel 등 자식 위젯 위에서는 걸리지 않는 경우가
+    있음). 창 안 어디서든 휠로 가로 스크롤이 되도록, 자식 위젯 전체에 직접
+    바인딩한다."""
+    canvas = scrollable_frame._parent_canvas
+
+    def _on_wheel(event):
+        if getattr(event, "num", None) == 4:
+            canvas.xview_scroll(-2, "units")
+        elif getattr(event, "num", None) == 5:
+            canvas.xview_scroll(2, "units")
+        else:
+            delta = getattr(event, "delta", 0)
+            canvas.xview_scroll(-2 if delta > 0 else 2, "units")
+        return "break"
+
+    def _bind(widget):
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            try:
+                widget.bind(seq, _on_wheel, add="+")
+            except Exception:  # noqa: BLE001 - 일부 내부 위젯은 바인딩을 못 받을 수 있음
+                pass
+
+    _bind(scrollable_frame)
+    for child in scrollable_frame.winfo_children():
+        _bind(child)
+
+
 class HourlyDetailDialog(ctk.CTkToplevel):
     """일자별 예보 칸(지역별 상세/종합보기 어느 쪽이든)을 더블클릭하면 그 날의
     3시간 구간별 날씨/기온/체감온도/강수량/강수확률을 가로로 늘어놓은 표로 보여준다."""
@@ -194,6 +224,7 @@ class HourlyDetailDialog(ctk.CTkToplevel):
             ).pack(padx=12, pady=10)
 
             self.geometry("760x420")
+            _enable_horizontal_wheel_scroll(table)
 
         ctk.CTkButton(self, text="닫기", fg_color="transparent", border_width=1, command=self.destroy).pack(
             pady=(0, 16)
@@ -358,6 +389,203 @@ class CustomRegionForm(ctk.CTkToplevel):
         self.on_saved()
         self.master.on_change(added=name)
         self.destroy()
+
+
+class BranchRangeDialog(ctk.CTkToplevel):
+    """지사 이름을 클릭하면 뜨는 창: 날짜와 시간대(시작~종료)를 골라 그 구간의
+    누적강수량을 지사 관할 지역별로 비교하고, 가장 많은 지역을 하이라이트한다.
+    중기예보(4일 이후)는 3시간 단위 시간별 데이터를 제공하지 않아 날짜 선택 대상에서
+    제외한다."""
+
+    def __init__(self, master, branch_name, members, reports):
+        super().__init__(master)
+        self.title(f"{branch_name} - 시간대별 누적강수량")
+        self.geometry("460x580")
+        self.branch_name = branch_name
+        self.members = members
+        self.reports = reports
+        self.font_title = master.font_title
+        self.font_body = master.font_body
+        self.font_small = master.font_small
+
+        ctk.CTkLabel(
+            self, text=f"{branch_name} 관할 지역 시간대별 누적강수량", font=self.font_title,
+            text_color=COLOR_TEXT, anchor="w",
+        ).pack(fill="x", padx=16, pady=(16, 4))
+        ctk.CTkLabel(
+            self,
+            text="중기예보(4일 이후)는 시간별 데이터가 없어 선택할 수 없습니다.",
+            font=self.font_small, text_color=COLOR_SUBTEXT, anchor="w",
+        ).pack(fill="x", padx=16, pady=(0, 10))
+
+        self._date_labels = {}
+        self.dates = self._short_term_dates()
+
+        if not self.dates:
+            ctk.CTkLabel(
+                self,
+                text="선택 가능한 단기예보 날짜가 없습니다.\n(즐겨찾기 조회가 끝난 뒤 다시 시도하세요)",
+                font=self.font_small, text_color=COLOR_SUBTEXT, justify="left",
+            ).pack(padx=16, pady=30)
+            ctk.CTkButton(self, text="닫기", fg_color="transparent", border_width=1, command=self.destroy).pack(
+                pady=(0, 16)
+            )
+            _bring_to_front(self)
+            return
+
+        picker_row = ctk.CTkFrame(self, fg_color="transparent")
+        picker_row.pack(fill="x", padx=16, pady=(0, 8))
+        picker_row.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(picker_row, text="날짜", font=self.font_body, text_color=COLOR_SUBTEXT).grid(
+            row=0, column=0, padx=(0, 8), pady=4, sticky="w"
+        )
+        date_labels = []
+        for d in self.dates:
+            label = f"{d[4:6]}/{d[6:8]}"
+            self._date_labels[label] = d
+            date_labels.append(label)
+        self.date_var = tk.StringVar(value=date_labels[0])
+        self.date_menu = ctk.CTkOptionMenu(
+            picker_row, values=date_labels, variable=self.date_var, command=self._on_date_changed,
+        )
+        self.date_menu.grid(row=0, column=1, padx=(0, 8), pady=4, sticky="ew")
+
+        time_row = ctk.CTkFrame(self, fg_color="transparent")
+        time_row.pack(fill="x", padx=16, pady=(0, 12))
+        ctk.CTkLabel(time_row, text="시작", font=self.font_body, text_color=COLOR_SUBTEXT).pack(side="left")
+        self.start_var = tk.StringVar()
+        self.start_menu = ctk.CTkOptionMenu(
+            time_row, values=["-"], variable=self.start_var, width=90,
+            command=lambda _v: self._render(),
+        )
+        self.start_menu.pack(side="left", padx=(6, 16))
+        ctk.CTkLabel(time_row, text="종료", font=self.font_body, text_color=COLOR_SUBTEXT).pack(side="left")
+        self.end_var = tk.StringVar()
+        self.end_menu = ctk.CTkOptionMenu(
+            time_row, values=["-"], variable=self.end_var, width=90,
+            command=lambda _v: self._render(),
+        )
+        self.end_menu.pack(side="left", padx=(6, 0))
+
+        self.result_frame = ctk.CTkScrollableFrame(self, fg_color=COLOR_CARD, corner_radius=12)
+        self.result_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+        ctk.CTkButton(self, text="닫기", fg_color="transparent", border_width=1, command=self.destroy).pack(
+            pady=(0, 16)
+        )
+
+        self._on_date_changed(date_labels[0])
+        _bring_to_front(self)
+
+    def _short_term_dates(self):
+        """관할 지역 중 단기예보 데이터가 있는 날짜만 모아 정렬해서 반환(중기예보 날짜는 제외)."""
+        dates = []
+        seen = set()
+        for name in self.members:
+            report = self.reports.get(name)
+            if not report:
+                continue
+            for day in report.get("forecast", []):
+                d = day.get("date")
+                if d and d not in seen and day.get("source") == "단기예보":
+                    seen.add(d)
+                    dates.append(d)
+        dates.sort()
+        return dates
+
+    def _hour_options(self, date_str):
+        """해당 날짜에 관할 지역들의 시간별 예보에 실제로 존재하는 시각(시 단위) 목록."""
+        hours = set()
+        for name in self.members:
+            report = self.reports.get(name)
+            if not report:
+                continue
+            day = next((d for d in report.get("forecast", []) if d.get("date") == date_str), None)
+            if not day:
+                continue
+            for hour in day.get("hourly") or []:
+                t = hour.get("time")
+                if t and len(t) >= 2:
+                    hours.add(int(t[:2]))
+        return sorted(hours)
+
+    def _on_date_changed(self, date_label):
+        date_str = self._date_labels.get(date_label)
+        hours = self._hour_options(date_str)
+        start_values = [f"{h:02d}시" for h in hours]
+        end_values = [f"{h:02d}시" for h in hours[1:]] + ["24시"]
+        self.start_menu.configure(values=start_values or ["-"])
+        self.end_menu.configure(values=end_values or ["-"])
+        if start_values:
+            self.start_var.set(start_values[0])
+        if end_values:
+            self.end_var.set(end_values[-1])
+        self._render()
+
+    def _selected_hour(self, label):
+        if not label or label == "-":
+            return None
+        return int(label[:2])
+
+    def _render(self):
+        for widget in self.result_frame.winfo_children():
+            widget.destroy()
+
+        date_str = self._date_labels.get(self.date_var.get())
+        start_hour = self._selected_hour(self.start_var.get())
+        end_hour = self._selected_hour(self.end_var.get())
+        if date_str is None or start_hour is None or end_hour is None:
+            return
+        if start_hour >= end_hour:
+            ctk.CTkLabel(
+                self.result_frame, text="시작 시각은 종료 시각보다 앞서야 합니다.", font=self.font_small,
+                text_color=COLOR_WARN_TEXT,
+            ).pack(padx=16, pady=16)
+            return
+
+        rows = []
+        best_name, best_amount = None, -1.0
+        for name in self.members:
+            report = self.reports.get(name)
+            day = None
+            if report:
+                day = next((d for d in report.get("forecast", []) if d.get("date") == date_str), None)
+            if day is None:
+                pcp_text, amount = "-", -1.0
+            else:
+                slot_pcp = [
+                    h.get("pcp") for h in (day.get("hourly") or [])
+                    if h.get("time") and start_hour <= int(h["time"][:2]) < end_hour
+                ]
+                pcp_text = kma_client.sum_pcp_range(slot_pcp) if slot_pcp else "강수없음"
+                amount = _pcp_numeric(pcp_text)
+            rows.append((name, pcp_text, amount))
+            if amount > best_amount:
+                best_amount = amount
+                best_name = name
+
+        ctk.CTkLabel(
+            self.result_frame,
+            text=f"{date_str[4:6]}/{date_str[6:8]}  {start_hour:02d}시~{end_hour:02d}시 누적강수량",
+            font=self.font_body, text_color=COLOR_TEXT, anchor="w",
+        ).pack(fill="x", padx=12, pady=(12, 6))
+
+        for name, pcp_text, amount in rows:
+            is_best = name == best_name and best_amount > 0
+            row = ctk.CTkFrame(
+                self.result_frame, fg_color=(COLOR_WARN_BG if is_best else "transparent"), corner_radius=8,
+            )
+            row.pack(fill="x", padx=12, pady=3)
+            ctk.CTkLabel(
+                row, text=name, font=self.font_body,
+                text_color=(COLOR_WARN_TEXT if is_best else COLOR_TEXT), anchor="w",
+            ).pack(side="left", padx=(10, 0), pady=8, fill="x", expand=True)
+            ctk.CTkLabel(
+                row, text=("★ " if is_best else "") + pcp_text,
+                font=ctk.CTkFont(family=self.font_body.cget("family"), size=13, weight=("bold" if is_best else "normal")),
+                text_color=(COLOR_WARN_TEXT if is_best else COLOR_TEXT), anchor="e",
+            ).pack(side="right", padx=(0, 10), pady=8)
 
 
 class BranchManagerDialog(ctk.CTkToplevel):
@@ -937,6 +1165,9 @@ class WeatherDutyApp(ctk.CTk):
     def _open_hourly_detail(self, region_name, day):
         HourlyDetailDialog(self, region_name, day)
 
+    def _open_branch_range(self, branch_name, members):
+        BranchRangeDialog(self, branch_name, members, self.reports)
+
     # ---------- rendering: summary view (지사별로 묶어 날짜 하나를 골라 비교) ----------
     def _all_summary_dates(self, favorites):
         all_dates = []
@@ -1013,14 +1244,19 @@ class WeatherDutyApp(ctk.CTk):
             ("체감 최저/최고", feels_col_w, "center"), ("강수확률", pop_col_w, "center"),
             ("강수량(00~24시 누적)", pcp_col_w, "center"), ("특보", warn_col_w, "center"),
         ]
+        ctk.CTkLabel(
+            self.summary_frame,
+            text="※ 지사명을 클릭하면 원하는 날짜·시간대의 누적강수량을 관할 지역별로 비교할 수 있습니다.",
+            font=self.font_small, text_color=COLOR_SUBTEXT, anchor="w",
+        ).grid(row=0, column=0, columnspan=len(headers), padx=16, pady=(12, 0), sticky="w")
         for col, (label, width, anchor) in enumerate(headers):
             ctk.CTkLabel(
                 self.summary_frame, text=label, font=self.font_body, text_color=COLOR_SUBTEXT, width=width,
                 anchor=anchor,
-            ).grid(row=0, column=col, padx=(16 if col == 0 else 4, 16 if col == len(headers) - 1 else 4),
-                   pady=(16, 8), sticky=("w" if anchor == "w" else ""))
+            ).grid(row=1, column=col, padx=(16 if col == 0 else 4, 16 if col == len(headers) - 1 else 4),
+                   pady=(4, 8), sticky=("w" if anchor == "w" else ""))
 
-        row_idx = 1
+        row_idx = 2
         for branch_name, members in groups:
             start_row = row_idx
 
@@ -1117,10 +1353,16 @@ class WeatherDutyApp(ctk.CTk):
 
                 row_idx += 1
 
-            ctk.CTkLabel(
+            branch_label = ctk.CTkLabel(
                 self.summary_frame, text=branch_name, font=self.font_body, text_color=COLOR_TEXT,
-                width=branch_col_w, fg_color=COLOR_BG, corner_radius=8,
-            ).grid(row=start_row, column=0, rowspan=(row_idx - start_row), padx=(16, 4), pady=3, sticky="ns", ipady=6)
+                width=branch_col_w, fg_color=COLOR_BG, corner_radius=8, cursor="hand2",
+            )
+            branch_label.grid(
+                row=start_row, column=0, rowspan=(row_idx - start_row), padx=(16, 4), pady=3, sticky="ns", ipady=6
+            )
+            branch_label.bind(
+                "<Button-1>", lambda _e, b=branch_name, m=list(members): self._open_branch_range(b, m)
+            )
 
 
 def main():
