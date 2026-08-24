@@ -10,8 +10,11 @@
   - 중기육상예보(getMidLandFcst): 훨씬 넓은 10개 권역 단위 코드(mid_land_regid).
     (수도권/강원영서/강원영동/충북/대전세종충남/전북/광주전남/대구경북/
     부산울산경남/제주) 시도명(강원은 영동·영서 구분)으로 결정한다.
-  - 기상특보(getWthrWrnList): 구조화된 지역코드가 아니라 자유 텍스트(제목/내용)로
+  - 기상특보(getWthrWrnMsg): 구조화된 지역코드가 아니라 자유 텍스트(제목/내용)로
     내려오므로, 텍스트에 지역명이 포함되는지로 매칭한다 (warn_keyword).
+  - 지상(종관, ASOS) 일자료(getWthrDataList, 과거 실측): 관측지점번호(stnId).
+    전국 97개 현재 운영 중인 관측소의 위경도(data/asos_stations.csv, 기상자료개방포털에서
+    받은 관측지점정보 메타데이터 기준)에서 가장 가까운 지점을 쓴다.
 
 시군구 중심 좌표만으로는 같은 시군구 안의 특정 읍/면/동까지는 못 짚는다.
 그런 세밀한 위치가 필요하면 "지역 관리"에서 위도/경도를 직접 입력해
@@ -26,6 +29,7 @@ from . import grid
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 _SIGUNGU_CSV = os.path.join(_DATA_DIR, "sigungu.csv")
 _MIDTERM_TA_CSV = os.path.join(_DATA_DIR, "midterm_ta_points.csv")
+_ASOS_STATIONS_CSV = os.path.join(_DATA_DIR, "asos_stations.csv")
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".weather_duty")
 CUSTOM_REGIONS_PATH = os.path.join(CONFIG_DIR, "custom_regions.json")
@@ -77,8 +81,25 @@ def _nearest_mid_ta_regid(lat, lon, points):
     return best["reg_id"]
 
 
-def build_region_info(lat, lon, sido_name, sigungu_name, midterm_points):
+def _load_asos_stations():
+    stations = []
+    with open(_ASOS_STATIONS_CSV, encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            stations.append(
+                {"stn_id": row["stn_id"], "name": row["name"], "lat": float(row["lat"]), "lon": float(row["lon"])}
+            )
+    return stations
+
+
+def _nearest_asos_stn_id(lat, lon, stations):
+    best = min(stations, key=lambda s: (s["lat"] - lat) ** 2 + (s["lon"] - lon) ** 2)
+    return best["stn_id"]
+
+
+def build_region_info(lat, lon, sido_name, sigungu_name, midterm_points, asos_stations=None):
     nx, ny = grid.latlon_to_grid(lat, lon)
+    if asos_stations is None:
+        asos_stations = _load_asos_stations()
     return {
         "nx": nx,
         "ny": ny,
@@ -87,6 +108,7 @@ def build_region_info(lat, lon, sido_name, sigungu_name, midterm_points):
         "mid_ta_regid": _nearest_mid_ta_regid(lat, lon, midterm_points),
         "mid_land_regid": _mid_land_regid(sido_name, sigungu_name),
         "warn_keyword": sigungu_name,
+        "asos_stn_id": _nearest_asos_stn_id(lat, lon, asos_stations),
     }
 
 
@@ -99,13 +121,14 @@ def _load_preset_regions():
         return _preset_cache
 
     midterm_points = _load_midterm_ta_points()
+    asos_stations = _load_asos_stations()
     presets = {}
     with open(_SIGUNGU_CSV, encoding="utf-8") as f:
         for row in csv.DictReader(f):
             name = f"{row['sido_name']} {row['sigungu_name']}"
             lat, lon = float(row["lat"]), float(row["lon"])
             presets[name] = build_region_info(
-                lat, lon, row["sido_name"], row["sigungu_name"], midterm_points
+                lat, lon, row["sido_name"], row["sigungu_name"], midterm_points, asos_stations
             )
     _preset_cache = presets
     return presets

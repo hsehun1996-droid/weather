@@ -1,6 +1,6 @@
 """기상청(공공데이터포털) API 클라이언트.
 
-사용하는 오픈API 3종:
+사용하는 오픈API 4종:
   1. 단기예보 ((구)동네예보) 조회서비스 - VilageFcstInfoService_2.0
      - getUltraSrtNcst : 초단기실황(현재 기온/강수)
      - getVilageFcst   : 단기예보(오늘~모레/글피, 최저·최고기온, 강수확률/강수량, 하늘상태)
@@ -8,10 +8,12 @@
      - getMidTa       : 중기기온(3~10일 후 최저/최고기온)
      - getMidLandFcst : 중기육상예보(3~10일 후 하늘상태 텍스트, 강수확률)
   3. 기상특보 조회서비스 - WthrWrnInfoService
-     - getWthrWrnList : 현재 발효 중인 특보 목록(자유 텍스트, 당일 기준만 제공)
+     - getWthrWrnMsg : 현재 발효 중인 특보 목록(자유 텍스트, 당일 기준만 제공)
+  4. 지상(종관, ASOS) 일자료 조회서비스 - AsosDalyInfoService
+     - getWthrDataList : 과거 실측 일별 기온/강수량(예보가 아니라 이미 관측된 확정값)
 
 data.go.kr에서 활용신청이 승인되어야 서비스키(인코딩/디코딩 키)를 받을 수 있다.
-신청 페이지에서 위 3개 서비스를 모두 "활용신청"해야 한다.
+신청 페이지에서 위 4개 서비스를 모두 "활용신청"해야 한다.
 """
 import datetime
 import math
@@ -46,6 +48,7 @@ except Exception:  # noqa: BLE001
 BASE_VILAGE = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0"
 BASE_MID = "https://apis.data.go.kr/1360000/MidFcstInfoService"
 BASE_WARN = "https://apis.data.go.kr/1360000/WthrWrnInfoService"
+BASE_ASOS_DAILY = "https://apis.data.go.kr/1360000/AsosDalyInfoService"
 
 TIMEOUT_SEC = 10
 
@@ -480,14 +483,82 @@ def match_region_warning(warnings, warn_keyword):
     return matched
 
 
-def build_region_report(service_key, region_name, region_info, warnings, now=None):
-    """지역 하나에 대한 통합 리포트: 현재 상태 + 향후 예보(최대 10일) + 특보(당일만)."""
+def _asos_daily_pcp_text(sum_rn):
+    try:
+        amount = float(sum_rn) if sum_rn not in (None, "") else 0.0
+    except ValueError:
+        return "강수없음"
+    return f"{amount:g}mm" if amount > 0 else "강수없음"
+
+
+def get_past_daily_observations(service_key, stn_id, start_date, end_date):
+    """지상(종관, ASOS) 일자료: 예보가 아니라 이미 관측이 끝난 과거 날짜의
+    확정 기온/강수량. start_date, end_date는 YYYYMMDD 문자열이며 둘 다 포함된다."""
+    items = _get(
+        f"{BASE_ASOS_DAILY}/getWthrDataList",
+        service_key,
+        {
+            "numOfRows": 10,
+            "pageNo": 1,
+            "dataCd": "ASOS",
+            "dateCd": "DAY",
+            "startDt": start_date,
+            "endDt": end_date,
+            "stnIds": stn_id,
+        },
+    )
+    result = []
+    for it in items:
+        date = (it.get("tm") or "").replace("-", "")
+        if not date:
+            continue
+        month = int(date[4:6])
+        avg_rhm = it.get("avgRhm")
+        avg_ws = it.get("avgWs")
+        try:
+            avg_ws_ms = float(avg_ws) if avg_ws not in (None, "") else None
+        except ValueError:
+            avg_ws_ms = None
+        # 과거 실측 자료는 시간별 습도/풍속이 없어 일 평균값을 하루 전체에 근사로 적용한다.
+        fl_min = feels_like_c(it.get("minTa"), avg_rhm, avg_ws_ms, month)
+        fl_max = feels_like_c(it.get("maxTa"), avg_rhm, avg_ws_ms, month)
+        result.append(
+            {
+                "date": date,
+                "tmin": it.get("minTa"),
+                "tmax": it.get("maxTa"),
+                "pop": None,
+                "pcp": _asos_daily_pcp_text(it.get("sumRn")),
+                "condition": "",
+                "source": "실측",
+                "feels_like_min": round(fl_min, 1) if fl_min is not None else None,
+                "feels_like_max": round(fl_max, 1) if fl_max is not None else None,
+                "hourly": [],
+            }
+        )
+    return result
+
+
+def build_region_report(service_key, region_name, region_info, warnings, now=None, past_days=2):
+    """지역 하나에 대한 통합 리포트: 과거 확정 실측(기본 2일) + 현재 상태 +
+    향후 예보(최대 10일) + 특보(당일만)."""
     report = {"name": region_name, "current": None, "forecast": [], "warnings": [], "errors": []}
+    now = now or datetime.datetime.now()
 
     try:
         report["current"] = get_current_conditions(service_key, region_info["nx"], region_info["ny"], now)
     except Exception as exc:  # noqa: BLE001 - 개별 지역 오류가 전체를 막지 않도록
         report["errors"].append(f"실황 조회 실패: {exc}")
+
+    past_term = []
+    asos_stn_id = region_info.get("asos_stn_id")
+    if asos_stn_id and past_days > 0:
+        end_date = (now - datetime.timedelta(days=1)).strftime("%Y%m%d")
+        start_date = (now - datetime.timedelta(days=past_days)).strftime("%Y%m%d")
+        try:
+            past_term = get_past_daily_observations(service_key, asos_stn_id, start_date, end_date)
+        except Exception as exc:  # noqa: BLE001
+            report["errors"].append(f"과거 실측 조회 실패: {exc}")
 
     short_term = []
     try:
@@ -505,7 +576,11 @@ def build_region_report(service_key, region_name, region_info, warnings, now=Non
             report["errors"].append(f"중기예보 조회 실패: {exc}")
 
     short_dates = {d["date"] for d in short_term}
-    combined = list(short_term) + [d for d in mid_term if d["date"] not in short_dates]
+    combined = (
+        list(past_term)
+        + list(short_term)
+        + [d for d in mid_term if d["date"] not in short_dates]
+    )
     combined.sort(key=lambda d: d["date"])
     report["forecast"] = combined
 

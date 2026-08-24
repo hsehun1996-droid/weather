@@ -207,6 +207,58 @@ class TestServiceKeyRedaction(unittest.TestCase):
         self.assertIn("***", str(ctx.exception))
 
 
+class TestAsosDailyPcpText(unittest.TestCase):
+    def test_zero_or_missing_is_no_rain(self):
+        self.assertEqual(kma_client._asos_daily_pcp_text(None), "강수없음")
+        self.assertEqual(kma_client._asos_daily_pcp_text(""), "강수없음")
+        self.assertEqual(kma_client._asos_daily_pcp_text("0"), "강수없음")
+
+    def test_positive_amount_formatted(self):
+        self.assertEqual(kma_client._asos_daily_pcp_text("12.5"), "12.5mm")
+
+
+class TestPastDailyObservations(unittest.TestCase):
+    @patch("weather_duty.kma_client._SESSION.get")
+    def test_parses_daily_items_and_computes_feels_like(self, mock_get):
+        items = [
+            {
+                "tm": "2026-08-17",
+                "minTa": "24.0",
+                "maxTa": "33.0",
+                "sumRn": "5.0",
+                "avgRhm": "70",
+                "avgWs": "2.0",
+            },
+            {
+                "tm": "2026-08-18",
+                "minTa": "23.0",
+                "maxTa": "31.0",
+                "sumRn": None,
+                "avgRhm": "60",
+                "avgWs": "1.5",
+            },
+        ]
+        mock_get.return_value = _mock_response(items)
+        result = kma_client.get_past_daily_observations("dummy-key", "108", "20260817", "20260818")
+
+        self.assertEqual(len(result), 2)
+        day1 = result[0]
+        self.assertEqual(day1["date"], "20260817")
+        self.assertEqual(day1["tmin"], "24.0")
+        self.assertEqual(day1["tmax"], "33.0")
+        self.assertEqual(day1["pcp"], "5mm")
+        self.assertEqual(day1["source"], "실측")
+        self.assertEqual(day1["hourly"], [])
+        # 8월(여름)이므로 열지수 공식 - 습도가 있으니 체감온도가 계산되어야 한다
+        expected_min = kma_client.feels_like_c("24.0", "70", "2.0", 8)
+        expected_max = kma_client.feels_like_c("33.0", "70", "2.0", 8)
+        self.assertAlmostEqual(day1["feels_like_min"], round(expected_min, 1))
+        self.assertAlmostEqual(day1["feels_like_max"], round(expected_max, 1))
+
+        day2 = result[1]
+        self.assertEqual(day2["pcp"], "강수없음")
+
+
 class TestFeelsLike(unittest.TestCase):
     def test_summer_uses_heat_index_and_needs_humidity(self):
         self.assertIsNone(kma_client.feels_like_c(30, None, 3, 8))

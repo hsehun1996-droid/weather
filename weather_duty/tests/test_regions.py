@@ -22,6 +22,7 @@ class TestAllRegions(unittest.TestCase):
         self.assertEqual(info["mid_ta_regid"], "11B10101")
         self.assertEqual(info["mid_land_regid"], "11B00000")
         self.assertEqual(info["warn_keyword"], "종로구")
+        self.assertEqual(info["asos_stn_id"], "108")
 
     def test_gangwon_yeongdong_vs_yeongseo_split(self):
         all_regions = regions.all_regions()
@@ -36,6 +37,21 @@ class TestAllRegions(unittest.TestCase):
             self.assertIsInstance(info["ny"], int, name)
             self.assertTrue(info["mid_ta_regid"], name)
             self.assertTrue(info["mid_land_regid"], name)
+            self.assertTrue(info["asos_stn_id"], name)
+
+
+class TestAsosStations(unittest.TestCase):
+    def test_nearest_station_for_known_point(self):
+        stations = regions._load_asos_stations()
+        # 서울시청 인근 좌표는 서울(108) 관측소가 가장 가까워야 한다.
+        self.assertEqual(regions._nearest_asos_stn_id(37.5665, 126.9780, stations), "108")
+
+    def test_build_region_info_includes_asos_stn_id(self):
+        midterm_points = regions._load_midterm_ta_points()
+        info = regions.build_region_info(
+            37.5665, 126.9780, "서울특별시", "종로구", midterm_points
+        )
+        self.assertEqual(info["asos_stn_id"], "108")
 
 
 if __name__ == "__main__":

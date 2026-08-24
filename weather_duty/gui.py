@@ -2,6 +2,7 @@
 
 서버 없이 단일 실행 파일(개별 프로그램)로 동작하며, 기상청 API를 직접 호출한다.
 """
+import datetime
 import re
 import threading
 import tkinter as tk
@@ -147,18 +148,28 @@ class HourlyDetailDialog(ctk.CTkToplevel):
         ).pack(fill="x", padx=16, pady=(16, 8))
 
         hourly = day.get("hourly") or []
-        if day.get("source") == "중기예보" or not hourly:
+        if not hourly:
             card = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=12)
             card.pack(fill="both", expand=True, padx=16, pady=(0, 8))
-            reason = (
-                "중기예보(4일 이후)는 기상청이 강수확률만 제공하고,\n3시간 단위 시간별 데이터는 제공하지 않습니다."
-                if day.get("source") == "중기예보"
-                else "시간별 데이터가 없습니다."
-            )
+            if day.get("source") == "중기예보":
+                reason = "중기예보(4일 이후)는 기상청이 강수확률만 제공하고,\n3시간 단위 시간별 데이터는 제공하지 않습니다."
+            elif day.get("source") == "실측":
+                reason = "지난 날짜의 실측 자료는 기상청이 일 단위로만 제공해\n3시간 단위 시간별 데이터는 없습니다."
+            else:
+                reason = "시간별 데이터가 없습니다."
             ctk.CTkLabel(
                 card, text=reason, font=font_small, text_color=COLOR_SUBTEXT, justify="left",
-            ).pack(padx=20, pady=40)
-            self.geometry("380x220")
+            ).pack(padx=20, pady=(40, 10))
+
+            summary_bits = [f"00~24시 누적 강수량: {_pcp_display_text(day)}"]
+            if day.get("tmin") is not None or day.get("tmax") is not None:
+                summary_bits.append(f"기온 {day.get('tmin', '-')}° / {day.get('tmax', '-')}°")
+            if day.get("feels_like_min") is not None:
+                summary_bits.append(f"체감 {day['feels_like_min']}° / {day['feels_like_max']}°")
+            ctk.CTkLabel(
+                card, text="   |   ".join(summary_bits), font=font_body, text_color=COLOR_TEXT,
+            ).pack(padx=20, pady=(0, 40))
+            self.geometry("380x260")
         else:
             row_defs = [("날씨", "condition"), ("기온", "temp"), ("체감온도", "feels_like"), ("강수량", "pcp"), ("강수확률", "pop")]
             label_col_w = 90
@@ -211,7 +222,7 @@ class HourlyDetailDialog(ctk.CTkToplevel):
                     text_color=_pop_color(pop_val), width=hour_col_w,
                 ).grid(row=5, column=col, padx=4, pady=8)
 
-            summary_bits = [f"00~24시 누적 강수량: {day.get('pcp') or '강수없음'}"]
+            summary_bits = [f"00~24시 누적 강수량: {_pcp_display_text(day)}"]
             if day.get("tmin") is not None or day.get("tmax") is not None:
                 summary_bits.append(f"기온 {day.get('tmin', '-')}° / {day.get('tmax', '-')}°")
             if day.get("feels_like_min") is not None:
@@ -891,8 +902,8 @@ class WeatherDutyApp(ctk.CTk):
         self.warning_banner.pack(fill="x", padx=20, pady=(8, 18), ipady=8)
 
         ctk.CTkLabel(
-            parent, text="향후 예보 (가져올 수 있는 최대 기간)", font=self.font_body, text_color=COLOR_SUBTEXT,
-            anchor="w",
+            parent, text="지난 실측 2일 + 향후 예보 (가져올 수 있는 최대 기간)", font=self.font_body,
+            text_color=COLOR_SUBTEXT, anchor="w",
         ).pack(fill="x", pady=(0, 6))
 
         self.forecast_frame = ctk.CTkScrollableFrame(parent, fg_color=COLOR_CARD, corner_radius=16)
@@ -1198,7 +1209,11 @@ class WeatherDutyApp(ctk.CTk):
 
         self.summary_date_selector.configure(values=labels)
         if self.selected_summary_date not in all_dates:
-            self.selected_summary_date = all_dates[0]
+            # 지난 실측 날짜가 목록 맨 앞에 추가되므로, 처음 열 때는 과거 날짜가 아니라
+            # 오늘(또는 오늘이 없으면 가장 빠른 미래 날짜)을 기본으로 보여준다.
+            today_str = datetime.datetime.now().strftime("%Y%m%d")
+            default_date = next((d for d in all_dates if d >= today_str), all_dates[0])
+            self.selected_summary_date = default_date
         selected_label = next(lbl for lbl, d in self._label_to_date.items() if d == self.selected_summary_date)
         self.summary_date_selector.set(selected_label)
 
