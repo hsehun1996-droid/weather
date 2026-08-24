@@ -207,56 +207,54 @@ class TestServiceKeyRedaction(unittest.TestCase):
         self.assertIn("***", str(ctx.exception))
 
 
-class TestAsosDailyPcpText(unittest.TestCase):
+class TestAsosPcpText(unittest.TestCase):
     def test_zero_or_missing_is_no_rain(self):
-        self.assertEqual(kma_client._asos_daily_pcp_text(None), "강수없음")
-        self.assertEqual(kma_client._asos_daily_pcp_text(""), "강수없음")
-        self.assertEqual(kma_client._asos_daily_pcp_text("0"), "강수없음")
+        self.assertEqual(kma_client._asos_pcp_text(None), "강수없음")
+        self.assertEqual(kma_client._asos_pcp_text(""), "강수없음")
+        self.assertEqual(kma_client._asos_pcp_text("0"), "강수없음")
 
     def test_positive_amount_formatted(self):
-        self.assertEqual(kma_client._asos_daily_pcp_text("12.5"), "12.5mm")
+        self.assertEqual(kma_client._asos_pcp_text("12.5"), "12.5mm")
 
 
-class TestPastDailyObservations(unittest.TestCase):
+class TestPastHourlyObservations(unittest.TestCase):
     @patch("weather_duty.kma_client._SESSION.get")
-    def test_parses_daily_items_and_computes_feels_like(self, mock_get):
+    def test_groups_by_date_and_computes_daily_rollup(self, mock_get):
         items = [
-            {
-                "tm": "2026-08-17",
-                "minTa": "24.0",
-                "maxTa": "33.0",
-                "sumRn": "5.0",
-                "avgRhm": "70",
-                "avgWs": "2.0",
-            },
-            {
-                "tm": "2026-08-18",
-                "minTa": "23.0",
-                "maxTa": "31.0",
-                "sumRn": None,
-                "avgRhm": "60",
-                "avgWs": "1.5",
-            },
+            {"tm": "2026-08-17 09:00", "ta": "24.0", "rn": "1.0", "hm": "70", "ws": "2.0"},
+            {"tm": "2026-08-17 15:00", "ta": "33.0", "rn": None, "hm": "50", "ws": "1.0"},
+            {"tm": "2026-08-18 06:00", "ta": "23.0", "rn": "", "hm": "60", "ws": "1.5"},
         ]
         mock_get.return_value = _mock_response(items)
-        result = kma_client.get_past_daily_observations("dummy-key", "108", "20260817", "20260818")
+        result = kma_client.get_past_hourly_observations("dummy-key", "108", "20260817", "20260818")
 
         self.assertEqual(len(result), 2)
         day1 = result[0]
         self.assertEqual(day1["date"], "20260817")
         self.assertEqual(day1["tmin"], "24.0")
         self.assertEqual(day1["tmax"], "33.0")
-        self.assertEqual(day1["pcp"], "5mm")
+        self.assertEqual(day1["pcp"], "1mm")  # 00~24시 누적: 1.0 + 0
         self.assertEqual(day1["source"], "실측")
-        self.assertEqual(day1["hourly"], [])
+        self.assertEqual(len(day1["hourly"]), 2)
+        hourly_by_time = {h["time"]: h for h in day1["hourly"]}
+        self.assertEqual(hourly_by_time["0900"]["temp"], "24.0")
+        self.assertEqual(hourly_by_time["0900"]["pcp"], "1mm")
+        self.assertEqual(hourly_by_time["1500"]["pcp"], "강수없음")
         # 8월(여름)이므로 열지수 공식 - 습도가 있으니 체감온도가 계산되어야 한다
-        expected_min = kma_client.feels_like_c("24.0", "70", "2.0", 8)
-        expected_max = kma_client.feels_like_c("33.0", "70", "2.0", 8)
-        self.assertAlmostEqual(day1["feels_like_min"], round(expected_min, 1))
-        self.assertAlmostEqual(day1["feels_like_max"], round(expected_max, 1))
+        expected = kma_client.feels_like_c("24.0", "70", "2.0", 8)
+        self.assertAlmostEqual(hourly_by_time["0900"]["feels_like"], expected)
 
         day2 = result[1]
+        self.assertEqual(day2["date"], "20260818")
+        self.assertEqual(day2["tmin"], "23.0")
+        self.assertEqual(day2["tmax"], "23.0")
         self.assertEqual(day2["pcp"], "강수없음")
+
+    @patch("weather_duty.kma_client._SESSION.get")
+    def test_no_items_returns_empty_list(self, mock_get):
+        mock_get.return_value = _mock_response([])
+        result = kma_client.get_past_hourly_observations("dummy-key", "108", "20260817", "20260818")
+        self.assertEqual(result, [])
 
 
 class TestFeelsLike(unittest.TestCase):

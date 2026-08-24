@@ -9,8 +9,10 @@
      - getMidLandFcst : 중기육상예보(3~10일 후 하늘상태 텍스트, 강수확률)
   3. 기상특보 조회서비스 - WthrWrnInfoService
      - getWthrWrnMsg : 현재 발효 중인 특보 목록(자유 텍스트, 당일 기준만 제공)
-  4. 지상(종관, ASOS) 일자료 조회서비스 - AsosDalyInfoService
-     - getWthrDataList : 과거 실측 일별 기온/강수량(예보가 아니라 이미 관측된 확정값)
+  4. 지상(종관, ASOS) 시간자료 조회서비스 - AsosHourlyInfoService
+     - getWthrDataList : 과거 실측 시간별 기온/강수량/습도/풍속(예보가 아니라 이미
+       관측된 확정값). 시간별 값을 모아 일 단위 최저/최고기온, 00~24시 누적강수량,
+       체감온도까지 함께 계산한다.
 
 data.go.kr에서 활용신청이 승인되어야 서비스키(인코딩/디코딩 키)를 받을 수 있다.
 신청 페이지에서 위 4개 서비스를 모두 "활용신청"해야 한다.
@@ -48,7 +50,7 @@ except Exception:  # noqa: BLE001
 BASE_VILAGE = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0"
 BASE_MID = "https://apis.data.go.kr/1360000/MidFcstInfoService"
 BASE_WARN = "https://apis.data.go.kr/1360000/WthrWrnInfoService"
-BASE_ASOS_DAILY = "https://apis.data.go.kr/1360000/AsosDalyInfoService"
+BASE_ASOS_HOURLY = "https://apis.data.go.kr/1360000/AsosHourlyInfoService"
 
 TIMEOUT_SEC = 10
 
@@ -483,57 +485,91 @@ def match_region_warning(warnings, warn_keyword):
     return matched
 
 
-def _asos_daily_pcp_text(sum_rn):
+def _asos_pcp_text(amount_mm):
+    """실측 강수량(mm)을 표시용 문구로 변환. 값이 없거나 0이면 '강수없음'."""
     try:
-        amount = float(sum_rn) if sum_rn not in (None, "") else 0.0
-    except ValueError:
+        amount = float(amount_mm) if amount_mm not in (None, "") else 0.0
+    except (TypeError, ValueError):
         return "강수없음"
     return f"{amount:g}mm" if amount > 0 else "강수없음"
 
 
-def get_past_daily_observations(service_key, stn_id, start_date, end_date):
-    """지상(종관, ASOS) 일자료: 예보가 아니라 이미 관측이 끝난 과거 날짜의
-    확정 기온/강수량. start_date, end_date는 YYYYMMDD 문자열이며 둘 다 포함된다."""
+def get_past_hourly_observations(service_key, stn_id, start_date, end_date):
+    """지상(종관, ASOS) 시간자료: 예보가 아니라 이미 관측이 끝난 과거 날짜의
+    확정 시간별 기온/강수량/습도/풍속. 이 시간별 값들을 모아 단기예보와 같은 형태
+    (날짜별 최저/최고기온, 00~24시 누적강수량, 체감온도, 시간별 상세)로 반환한다.
+    start_date, end_date는 YYYYMMDD 문자열이며 둘 다 포함된다."""
     items = _get(
-        f"{BASE_ASOS_DAILY}/getWthrDataList",
+        f"{BASE_ASOS_HOURLY}/getWthrDataList",
         service_key,
         {
-            "numOfRows": 10,
+            "numOfRows": 24 * 10,
             "pageNo": 1,
             "dataCd": "ASOS",
-            "dateCd": "DAY",
+            "dateCd": "HR",
             "startDt": start_date,
+            "startHh": "00",
             "endDt": end_date,
+            "endHh": "23",
             "stnIds": stn_id,
         },
     )
-    result = []
+
+    by_date = {}
     for it in items:
-        date = (it.get("tm") or "").replace("-", "")
-        if not date:
+        tm = it.get("tm") or ""
+        date_part, _, time_part = tm.partition(" ")
+        date = date_part.replace("-", "")
+        if not date or len(time_part) < 2:
             continue
+        hour = time_part[:2]
         month = int(date[4:6])
-        avg_rhm = it.get("avgRhm")
-        avg_ws = it.get("avgWs")
+
+        ta = it.get("ta")
         try:
-            avg_ws_ms = float(avg_ws) if avg_ws not in (None, "") else None
-        except ValueError:
-            avg_ws_ms = None
-        # 과거 실측 자료는 시간별 습도/풍속이 없어 일 평균값을 하루 전체에 근사로 적용한다.
-        fl_min = feels_like_c(it.get("minTa"), avg_rhm, avg_ws_ms, month)
-        fl_max = feels_like_c(it.get("maxTa"), avg_rhm, avg_ws_ms, month)
+            rn_amount = float(it.get("rn")) if it.get("rn") not in (None, "") else 0.0
+        except (TypeError, ValueError):
+            rn_amount = 0.0
+
+        day = by_date.setdefault(date, {"date": date, "slots": []})
+        day["slots"].append(
+            {
+                "time": f"{hour}00",
+                "temp": ta,
+                "feels_like": feels_like_c(ta, it.get("hm"), it.get("ws"), month),
+                "pop": None,
+                "pcp": _asos_pcp_text(rn_amount),
+                "condition": "",
+                "_rn_amount": rn_amount,
+                "_ta": ta,
+            }
+        )
+
+    result = []
+    for date in sorted(by_date):
+        slots = sorted(by_date[date]["slots"], key=lambda s: s["time"])
+        temps = []
+        for s in slots:
+            try:
+                temps.append(float(s["_ta"]))
+            except (TypeError, ValueError):
+                pass
+        total_rn = sum(s["_rn_amount"] for s in slots)
+        feels_vals = [s["feels_like"] for s in slots if s["feels_like"] is not None]
+        hourly = [{k: v for k, v in s.items() if not k.startswith("_")} for s in slots]
+
         result.append(
             {
                 "date": date,
-                "tmin": it.get("minTa"),
-                "tmax": it.get("maxTa"),
+                "tmin": (f"{min(temps):.1f}" if temps else None),
+                "tmax": (f"{max(temps):.1f}" if temps else None),
                 "pop": None,
-                "pcp": _asos_daily_pcp_text(it.get("sumRn")),
+                "pcp": _asos_pcp_text(total_rn) if slots else "강수없음",
                 "condition": "",
                 "source": "실측",
-                "feels_like_min": round(fl_min, 1) if fl_min is not None else None,
-                "feels_like_max": round(fl_max, 1) if fl_max is not None else None,
-                "hourly": [],
+                "feels_like_min": round(min(feels_vals), 1) if feels_vals else None,
+                "feels_like_max": round(max(feels_vals), 1) if feels_vals else None,
+                "hourly": hourly,
             }
         )
     return result
@@ -556,7 +592,7 @@ def build_region_report(service_key, region_name, region_info, warnings, now=Non
         end_date = (now - datetime.timedelta(days=1)).strftime("%Y%m%d")
         start_date = (now - datetime.timedelta(days=past_days)).strftime("%Y%m%d")
         try:
-            past_term = get_past_daily_observations(service_key, asos_stn_id, start_date, end_date)
+            past_term = get_past_hourly_observations(service_key, asos_stn_id, start_date, end_date)
         except Exception as exc:  # noqa: BLE001
             report["errors"].append(f"과거 실측 조회 실패: {exc}")
 

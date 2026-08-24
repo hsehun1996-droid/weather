@@ -154,7 +154,7 @@ class HourlyDetailDialog(ctk.CTkToplevel):
             if day.get("source") == "중기예보":
                 reason = "중기예보(4일 이후)는 기상청이 강수확률만 제공하고,\n3시간 단위 시간별 데이터는 제공하지 않습니다."
             elif day.get("source") == "실측":
-                reason = "지난 날짜의 실측 자료는 기상청이 일 단위로만 제공해\n3시간 단위 시간별 데이터는 없습니다."
+                reason = "이 날짜의 시간별 실측 자료를 불러오지 못했습니다."
             else:
                 reason = "시간별 데이터가 없습니다."
             ctk.CTkLabel(
@@ -405,8 +405,8 @@ class CustomRegionForm(ctk.CTkToplevel):
 class BranchRangeDialog(ctk.CTkToplevel):
     """지사 이름을 클릭하면 뜨는 창: 날짜와 시간대(시작~종료)를 골라 그 구간의
     누적강수량을 지사 관할 지역별로 비교하고, 가장 많은 지역을 하이라이트한다.
-    중기예보(4일 이후)는 3시간 단위 시간별 데이터를 제공하지 않아 날짜 선택 대상에서
-    제외한다."""
+    지난 실측 2일 + 단기예보 날짜를 고를 수 있다. 중기예보(4일 이후)는 3시간 단위
+    시간별 데이터를 제공하지 않아 날짜 선택 대상에서 제외한다."""
 
     def __init__(self, master, branch_name, members, reports):
         super().__init__(master)
@@ -425,7 +425,7 @@ class BranchRangeDialog(ctk.CTkToplevel):
         ).pack(fill="x", padx=16, pady=(16, 4))
         ctk.CTkLabel(
             self,
-            text="중기예보(4일 이후)는 시간별 데이터가 없어 선택할 수 없습니다.",
+            text="중기예보(4일 이후)는 시간별 데이터가 없어 선택할 수 없습니다.\n(지난 실측 2일은 선택 가능)",
             font=self.font_small, text_color=COLOR_SUBTEXT, anchor="w",
         ).pack(fill="x", padx=16, pady=(0, 10))
 
@@ -435,7 +435,7 @@ class BranchRangeDialog(ctk.CTkToplevel):
         if not self.dates:
             ctk.CTkLabel(
                 self,
-                text="선택 가능한 단기예보 날짜가 없습니다.\n(즐겨찾기 조회가 끝난 뒤 다시 시도하세요)",
+                text="선택 가능한 날짜가 없습니다.\n(즐겨찾기 조회가 끝난 뒤 다시 시도하세요)",
                 font=self.font_small, text_color=COLOR_SUBTEXT, justify="left",
             ).pack(padx=16, pady=30)
             ctk.CTkButton(self, text="닫기", fg_color="transparent", border_width=1, command=self.destroy).pack(
@@ -490,7 +490,8 @@ class BranchRangeDialog(ctk.CTkToplevel):
         _bring_to_front(self)
 
     def _short_term_dates(self):
-        """관할 지역 중 단기예보 데이터가 있는 날짜만 모아 정렬해서 반환(중기예보 날짜는 제외)."""
+        """관할 지역 중 시간별 데이터가 있는 날짜(지난 실측 + 단기예보)만 모아
+        정렬해서 반환한다. 중기예보(4일 이후)는 3시간 단위 시간별 데이터가 없어 제외."""
         dates = []
         seen = set()
         for name in self.members:
@@ -499,7 +500,7 @@ class BranchRangeDialog(ctk.CTkToplevel):
                 continue
             for day in report.get("forecast", []):
                 d = day.get("date")
-                if d and d not in seen and day.get("source") == "단기예보":
+                if d and d not in seen and day.get("source") in ("단기예보", "실측"):
                     seen.add(d)
                     dates.append(d)
         dates.sort()
