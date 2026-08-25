@@ -9,7 +9,10 @@ echo "빌드 도구를 설치합니다..."
 $PYCMD -m pip install -r requirements.txt pyinstaller
 
 echo "WeatherDuty 를 빌드합니다..."
-$PYCMD -m PyInstaller --onefile --windowed --name WeatherDuty --add-data "weather_duty/data:weather_duty/data" main.py
+$PYCMD -m PyInstaller --onefile --windowed --name WeatherDuty \
+  --add-data "weather_duty/data:weather_duty/data" \
+  --add-data "weather_duty/assets:weather_duty/assets" \
+  main.py
 
 echo
 echo "완료되면 dist/WeatherDuty 파일이 생성됩니다."

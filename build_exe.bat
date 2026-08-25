@@ -20,7 +20,10 @@ if errorlevel 1 (
 )
 
 echo Building WeatherDuty.exe...
-%PYCMD% -m PyInstaller --onefile --windowed --name WeatherDuty --add-data "weather_duty\data;weather_duty\data" main.py
+%PYCMD% -m PyInstaller --onefile --windowed --name WeatherDuty ^
+  --add-data "weather_duty\data;weather_duty\data" ^
+  --add-data "weather_duty\assets;weather_duty\assets" ^
+  main.py
 if errorlevel 1 (
     echo.
     echo [ERROR] Build failed ^(see the message above^).

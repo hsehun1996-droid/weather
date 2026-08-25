@@ -1,8 +1,9 @@
 # weather-duty
 
 폭염·풍수해·제설 근무를 위한 지역별 날씨 모니터. 서버 없이 로컬에서 실행하는
-데스크톱 프로그램(파이썬 + CustomTkinter)으로, 기상청(공공데이터포털) API를
-직접 호출한다.
+데스크톱 프로그램(파이썬 + PySide6/Qt)으로, 기상청(공공데이터포털) API를
+직접 호출한다. 화면은 애플 시스템 색상/폰트(Pretendard 번들)에 맞춘 라이트·다크
+모드를 지원한다.
 
 ## 기능
 
@@ -39,6 +40,13 @@
 지점의 위도/경도를 입력해 사용자 정의 지역으로 추가하면 된다(위경도는 구글맵 등
 지도에서 위치를 우클릭하면 확인 가능).
 
+## 폰트
+
+애플 시스템 폰트(SF Pro)와 비슷한 느낌을 내면서도 어느 OS에나 자유롭게 배포할 수
+있도록 [Pretendard](https://github.com/orioncactus/pretendard)(OFL 라이선스)를
+`weather_duty/assets/fonts/`에 번들로 포함했다. 라이선스 전문은 같은 폴더의
+`LICENSE.txt`에 있다.
+
 ## 필요한 공공데이터포털 API (인증키 신청 필요)
 
 아래 4개를 **모두** [data.go.kr](https://www.data.go.kr) 에서 "활용신청" 해야
@@ -69,7 +77,8 @@
 
 **사전 준비 (최초 1회만):** [python.org](https://www.python.org/downloads/)에서
 Python 3를 설치한다. Windows 설치 화면에서 **"Add python.exe to PATH"** 체크박스를
-반드시 체크한다. tkinter는 표준 설치본에 기본 포함되어 있어 따로 설치할 필요가 없다.
+반드시 체크한다. GUI 라이브러리(PySide6/Qt)는 `requirements.txt`를 통해 자동으로
+설치되며, 필요한 Qt 런타임을 자체적으로 포함하고 있어 따로 설치할 것은 없다.
 
 그 다음부터는 아래 파일을 **더블클릭**하면 된다.
 
