@@ -1,61 +1,21 @@
-"""폭염/풍수해/제설 근무용 날씨 모니터 - CustomTkinter 데스크톱 GUI.
+"""폭염/풍수해/제설 근무용 날씨 모니터 - PySide6(Qt) 데스크톱 GUI.
 
 서버 없이 단일 실행 파일(개별 프로그램)로 동작하며, 기상청 API를 직접 호출한다.
 """
-import datetime
 import re
 import threading
-import tkinter as tk
-import tkinter.font as tkfont
-from tkinter import messagebox, simpledialog
 
-import customtkinter as ctk
-
-from . import config, kma_client, regions
-
-# ---- Apple 시스템 색상에 가깝게 맞춘 팔레트 (light, dark) ----
-COLOR_BG = ("#F2F2F7", "#1C1C1E")
-COLOR_CARD = ("#FFFFFF", "#2C2C2E")
-COLOR_CARD_HOVER = ("#E9E9EE", "#3A3A3C")
-COLOR_TEXT = ("#1C1C1E", "#F5F5F7")
-COLOR_SUBTEXT = ("#6E6E73", "#98989D")
-COLOR_ACCENT = ("#007AFF", "#0A84FF")
-COLOR_WARN_BG = ("#FFEBEA", "#3A1F1E")
-COLOR_WARN_TEXT = ("#FF3B30", "#FF453A")
-COLOR_OK_BG = ("#EAF7ED", "#1F3324")
-COLOR_OK_TEXT = ("#34A853", "#30D158")
-COLOR_BORDER = ("#D1D1D6", "#3A3A3C")
-COLOR_RISK_HIGH = ("#D70015", "#FF453A")
-COLOR_RISK_MID = ("#C77700", "#FF9F0A")
-
-_FONT_CANDIDATES = (
-    "SF Pro Display",
-    "SF Pro Text",
-    "Segoe UI Variable",
-    "Segoe UI",
-    "Helvetica Neue",
-    "Apple SD Gothic Neo",
-    "Malgun Gothic",
+from PySide6.QtCore import Qt, QObject, Signal
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (
+    QApplication, QWidget, QMainWindow, QFrame, QLabel, QPushButton, QLineEdit,
+    QCheckBox, QComboBox, QScrollArea, QVBoxLayout, QHBoxLayout,
+    QDialog, QMessageBox, QInputDialog, QButtonGroup,
+    QGraphicsDropShadowEffect, QStackedWidget, QTableWidget, QTableWidgetItem,
+    QAbstractItemView, QAbstractScrollArea,
 )
 
-
-def _pick_font_family():
-    available = set(tkfont.families())
-    for candidate in _FONT_CANDIDATES:
-        if candidate in available:
-            return candidate
-    return "TkDefaultFont"
-
-
-def _pop_color(pop):
-    if pop is None:
-        return COLOR_SUBTEXT
-    if pop >= 70:
-        return COLOR_RISK_HIGH
-    if pop >= 50:
-        return COLOR_RISK_MID
-    return COLOR_ACCENT
-
+from . import config, kma_client, regions, theme
 
 _PCP_NUMBER_RE = re.compile(r"([\d.]+)")
 
@@ -89,247 +49,351 @@ def _format_fcst_time(time_str):
     return time_str or "-"
 
 
+def qss(color=None, bg=None, radius=None, pad=None, border=None, weight=None):
+    decls = []
+    if color:
+        decls.append(f"color:{color}")
+    if bg is not None:
+        decls.append(f"background-color:{bg}")
+    if radius is not None:
+        decls.append(f"border-radius:{radius}px")
+    if pad:
+        decls.append(f"padding:{pad}")
+    if border:
+        decls.append(f"border:{border}")
+    if weight:
+        decls.append(f"font-weight:{weight}")
+    return ";".join(decls) + ";"
+
+
+def button_qss(colors, bg, color, hover_bg=None, border=None, radius=10, pad="6px 14px"):
+    hover_bg = hover_bg or bg
+    lines = [
+        "QPushButton {"
+        f" background-color:{bg}; color:{color}; border-radius:{radius}px; padding:{pad};"
+        + (f" border:1px solid {border};" if border else " border:none;")
+        + " }",
+        f"QPushButton:hover {{ background-color:{hover_bg}; }}",
+        f"QPushButton:disabled {{ color:{colors['subtext']}; }}",
+    ]
+    return "\n".join(lines)
+
+
+def make_card(parent, colors, radius=16, shadow=True):
+    card = QFrame(parent)
+    card.setStyleSheet(f"QFrame {{ background-color:{colors['card']}; border-radius:{radius}px; }}")
+    if shadow:
+        effect = QGraphicsDropShadowEffect(card)
+        effect.setBlurRadius(18)
+        effect.setOffset(0, 3)
+        effect.setColor(Qt.GlobalColor.black)
+        card.setGraphicsEffect(effect)
+    return card
+
+
+class ClickableFrame(QFrame):
+    doubleClicked = Signal()
+    clicked = Signal()
+
+    def mouseDoubleClickEvent(self, event):  # noqa: N802 - Qt override
+        self.doubleClicked.emit()
+        super().mouseDoubleClickEvent(event)
+
+    def mousePressEvent(self, event):  # noqa: N802 - Qt override
+        self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+class SegmentedControl(QWidget):
+    """CTkSegmentedButton과 비슷한, 라벨 하나를 고르는 가로 버튼 묶음."""
+
+    currentChanged = Signal(str)
+
+    def __init__(self, parent, colors):
+        super().__init__(parent)
+        self.colors = colors
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(4)
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        self._buttons = {}
+
+    def set_values(self, values):
+        for btn in self._buttons.values():
+            self._group.removeButton(btn)
+            btn.deleteLater()
+        self._buttons = {}
+        for value in values:
+            btn = QPushButton(value, self)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _checked, v=value: self.currentChanged.emit(v))
+            self._layout.addWidget(btn)
+            self._group.addButton(btn)
+            self._buttons[value] = btn
+        self._apply_style()
+
+    def set_current(self, value):
+        btn = self._buttons.get(value)
+        if btn:
+            btn.setChecked(True)
+
+    def _apply_style(self):
+        c = self.colors
+        for btn in self._buttons.values():
+            btn.setStyleSheet(
+                "QPushButton {"
+                f" background-color:{c['bg']}; color:{c['text']}; border-radius:8px; padding:6px 12px;"
+                " border:none; }"
+                f"QPushButton:checked {{ background-color:{c['accent']}; color:{c['on_accent']}; }}"
+                f"QPushButton:hover {{ background-color:{c['card_hover']}; }}"
+            )
+
+
 def _bring_to_front(win):
-    """CTkToplevel이 메인 창 뒤에 숨어서 열리는 경우가 있어, 항상 앞으로 띄운다."""
-    win.lift()
-    win.attributes("-topmost", True)
-    win.focus_force()
+    win.raise_()
+    win.activateWindow()
 
 
-def _enable_horizontal_wheel_scroll(scrollable_frame):
-    """CTkScrollableFrame(orientation="horizontal")의 마우스휠 스크롤은 기본적으로
-    스크롤바 위에 있을 때만 확실히 동작한다(내부적으로 bind_all 로 전역 바인딩을
-    하긴 하지만, 안에 들어찬 CTkLabel 등 자식 위젯 위에서는 걸리지 않는 경우가
-    있음). 창 안 어디서든 휠로 가로 스크롤이 되도록, 자식 위젯 전체에 직접
-    바인딩한다."""
-    canvas = scrollable_frame._parent_canvas
-
-    def _on_wheel(event):
-        if getattr(event, "num", None) == 4:
-            canvas.xview_scroll(-2, "units")
-        elif getattr(event, "num", None) == 5:
-            canvas.xview_scroll(2, "units")
-        else:
-            delta = getattr(event, "delta", 0)
-            canvas.xview_scroll(-2 if delta > 0 else 2, "units")
-        return "break"
-
-    def _bind(widget):
-        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-            try:
-                widget.bind(seq, _on_wheel, add="+")
-            except Exception:  # noqa: BLE001 - 일부 내부 위젯은 바인딩을 못 받을 수 있음
-                pass
-
-    _bind(scrollable_frame)
-    for child in scrollable_frame.winfo_children():
-        _bind(child)
+def _clear_layout(layout):
+    """레이아웃의 자식 위젯을 전부 제거한다. deleteLater()만 하면 실제 삭제가
+    다음 이벤트 루프까지 미뤄져 새로 그린 위젯과 잠깐 겹쳐 보이므로, setParent(None)로
+    화면에서 즉시 떼어낸 뒤 삭제를 예약한다."""
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        if widget is not None:
+            widget.setParent(None)
+            widget.deleteLater()
 
 
-class HourlyDetailDialog(ctk.CTkToplevel):
+# ---------------------------------------------------------------------------
+# 다이얼로그
+# ---------------------------------------------------------------------------
+
+
+class _HorizontalWheelTable(QTableWidget):
+    """시간별 표는 세로줄이 몇 개 안 되고 가로(시각)로 길게 늘어서므로,
+    마우스 휠(세로 스크롤 입력)을 가로 스크롤로 돌려준다."""
+
+    def wheelEvent(self, event):  # noqa: N802 - Qt override
+        delta = event.angleDelta().y() or event.angleDelta().x()
+        bar = self.horizontalScrollBar()
+        bar.setValue(bar.value() - delta)
+        event.accept()
+
+
+class HourlyDetailDialog(QDialog):
     """일자별 예보 칸(지역별 상세/종합보기 어느 쪽이든)을 더블클릭하면 그 날의
     3시간 구간별 날씨/기온/체감온도/강수량/강수확률을 가로로 늘어놓은 표로 보여준다."""
 
-    def __init__(self, master, region_name, day):
-        super().__init__(master)
+    def __init__(self, parent, region_name, day):
+        super().__init__(parent)
+        colors = parent.colors
         pretty_date = day.get("date", "")
         if len(pretty_date) == 8:
             pretty_date = f"{pretty_date[:4]}-{pretty_date[4:6]}-{pretty_date[6:8]}"
-        self.title(f"{region_name} {pretty_date} 시간별 예보")
-        self.configure(fg_color=COLOR_BG)
+        self.setWindowTitle(f"{region_name} {pretty_date} 시간별 예보")
+        self.setStyleSheet(f"QDialog {{ background-color:{colors['bg']}; }}")
 
-        font_title = getattr(master, "font_title", None)
-        font_body = getattr(master, "font_body", None)
-        font_small = getattr(master, "font_small", None)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
 
-        ctk.CTkLabel(
-            self, text=f"{region_name}  ·  {pretty_date} 시간별 예보", font=font_title, text_color=COLOR_TEXT,
-            anchor="w",
-        ).pack(fill="x", padx=16, pady=(16, 8))
+        title = QLabel(f"{region_name}  ·  {pretty_date} 시간별 예보", self)
+        title.setFont(parent.font_title)
+        title.setStyleSheet(qss(color=colors["text"]))
+        layout.addWidget(title)
 
         hourly = day.get("hourly") or []
+        summary_bits = [f"00~24시 누적 강수량: {_pcp_display_text(day)}"]
+        if day.get("tmin") is not None or day.get("tmax") is not None:
+            summary_bits.append(f"기온 {day.get('tmin', '-')}° / {day.get('tmax', '-')}°")
+        if day.get("feels_like_min") is not None:
+            summary_bits.append(f"체감 {day['feels_like_min']}° / {day['feels_like_max']}°")
+
         if not hourly:
-            card = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=12)
-            card.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+            card = make_card(self, colors)
+            card_layout = QVBoxLayout(card)
             if day.get("source") == "중기예보":
                 reason = "중기예보(4일 이후)는 기상청이 강수확률만 제공하고,\n3시간 단위 시간별 데이터는 제공하지 않습니다."
             elif day.get("source") == "실측":
                 reason = "이 날짜의 시간별 실측 자료를 불러오지 못했습니다."
             else:
                 reason = "시간별 데이터가 없습니다."
-            ctk.CTkLabel(
-                card, text=reason, font=font_small, text_color=COLOR_SUBTEXT, justify="left",
-            ).pack(padx=20, pady=(40, 10))
-
-            summary_bits = [f"00~24시 누적 강수량: {_pcp_display_text(day)}"]
-            if day.get("tmin") is not None or day.get("tmax") is not None:
-                summary_bits.append(f"기온 {day.get('tmin', '-')}° / {day.get('tmax', '-')}°")
-            if day.get("feels_like_min") is not None:
-                summary_bits.append(f"체감 {day['feels_like_min']}° / {day['feels_like_max']}°")
-            ctk.CTkLabel(
-                card, text="   |   ".join(summary_bits), font=font_body, text_color=COLOR_TEXT,
-            ).pack(padx=20, pady=(0, 40))
-            self.geometry("380x260")
+            reason_label = QLabel(reason, card)
+            reason_label.setFont(parent.font_small)
+            reason_label.setStyleSheet(qss(color=colors["subtext"]))
+            card_layout.addSpacing(24)
+            card_layout.addWidget(reason_label)
+            summary_label = QLabel("   |   ".join(summary_bits), card)
+            summary_label.setFont(parent.font_body)
+            summary_label.setStyleSheet(qss(color=colors["text"]))
+            card_layout.addWidget(summary_label)
+            card_layout.addSpacing(24)
+            layout.addWidget(card, 1)
+            self.resize(400, 260)
         else:
             row_defs = [("날씨", "condition"), ("기온", "temp"), ("체감온도", "feels_like"), ("강수량", "pcp"), ("강수확률", "pop")]
-            label_col_w = 90
-            hour_col_w = 76
-
-            table = ctk.CTkScrollableFrame(
-                self, orientation="horizontal", fg_color=COLOR_CARD, corner_radius=12, height=230
+            table = _HorizontalWheelTable(len(row_defs) + 1, len(hourly), self)
+            table.horizontalHeader().hide()
+            table.verticalHeader().hide()
+            table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+            table.setShowGrid(False)
+            table.setStyleSheet(
+                f"QTableWidget {{ background-color:{colors['card']}; border:none; border-radius:12px; }}"
             )
-            table.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+            table.setColumnWidth(0, 90)
+            for row_idx, (label, _key) in enumerate([("시각", None)] + row_defs):
+                item = QTableWidgetItem(label)
+                item.setForeground(_qcolor(colors["subtext"]))
+                item.setFont(parent.font_body)
+                table.setItem(row_idx, 0, item)
 
-            ctk.CTkLabel(table, text="시각", font=font_body, text_color=COLOR_SUBTEXT, width=label_col_w, anchor="w").grid(
-                row=0, column=0, padx=(12, 8), pady=8, sticky="w"
-            )
-            for row_idx, (label, _key) in enumerate(row_defs, start=1):
-                ctk.CTkLabel(
-                    table, text=label, font=font_body, text_color=COLOR_SUBTEXT, width=label_col_w, anchor="w"
-                ).grid(row=row_idx, column=0, padx=(12, 8), pady=8, sticky="w")
-
-            for col, hour in enumerate(hourly, start=1):
-                ctk.CTkLabel(
-                    table, text=_format_fcst_time(hour.get("time")), font=font_body, text_color=COLOR_TEXT,
-                    width=hour_col_w,
-                ).grid(row=0, column=col, padx=4, pady=8)
-
-                condition_text = hour.get("condition") or "-"
-                ctk.CTkLabel(
-                    table, text=condition_text, font=font_small, text_color=COLOR_SUBTEXT, width=hour_col_w,
-                ).grid(row=1, column=col, padx=4, pady=8)
-
+            for col, hour in enumerate(hourly):
+                table.setColumnWidth(col, 76)
+                _set_cell(table, 0, col, _format_fcst_time(hour.get("time")), colors["text"], parent.font_body)
+                _set_cell(table, 1, col, hour.get("condition") or "-", colors["subtext"], parent.font_small)
                 temp = hour.get("temp")
-                ctk.CTkLabel(
-                    table, text=(f"{temp}°" if temp is not None else "-"), font=font_body, text_color=COLOR_TEXT,
-                    width=hour_col_w,
-                ).grid(row=2, column=col, padx=4, pady=8)
-
+                _set_cell(table, 2, col, (f"{temp}°" if temp is not None else "-"), colors["text"], parent.font_body)
                 feels_like = hour.get("feels_like")
-                ctk.CTkLabel(
-                    table, text=(f"{feels_like:.1f}°" if feels_like is not None else "-"), font=font_body,
-                    text_color=COLOR_ACCENT, width=hour_col_w,
-                ).grid(row=3, column=col, padx=4, pady=8)
-
-                pcp_val = hour.get("pcp") or "-"
-                ctk.CTkLabel(
-                    table, text=pcp_val, font=font_small, text_color=COLOR_SUBTEXT, width=hour_col_w,
-                ).grid(row=4, column=col, padx=4, pady=8)
-
+                _set_cell(
+                    table, 3, col, (f"{feels_like:.1f}°" if feels_like is not None else "-"),
+                    colors["accent"], parent.font_body,
+                )
+                _set_cell(table, 4, col, hour.get("pcp") or "-", colors["subtext"], parent.font_small)
                 pop_val = hour.get("pop")
-                ctk.CTkLabel(
-                    table, text=(f"{pop_val}%" if pop_val is not None else "-"), font=font_small,
-                    text_color=_pop_color(pop_val), width=hour_col_w,
-                ).grid(row=5, column=col, padx=4, pady=8)
+                _set_cell(
+                    table, 5, col, (f"{pop_val}%" if pop_val is not None else "-"),
+                    theme.pop_color(pop_val, colors), parent.font_small,
+                )
 
-            summary_bits = [f"00~24시 누적 강수량: {_pcp_display_text(day)}"]
-            if day.get("tmin") is not None or day.get("tmax") is not None:
-                summary_bits.append(f"기온 {day.get('tmin', '-')}° / {day.get('tmax', '-')}°")
-            if day.get("feels_like_min") is not None:
-                summary_bits.append(f"체감 {day['feels_like_min']}° / {day['feels_like_max']}°")
+            layout.addWidget(table, 1)
 
-            summary_card = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=10)
-            summary_card.pack(fill="x", padx=16, pady=(0, 8))
-            ctk.CTkLabel(
-                summary_card, text="   |   ".join(summary_bits), font=font_body, text_color=COLOR_TEXT,
-            ).pack(padx=12, pady=10)
+            summary_card = make_card(self, colors, radius=10, shadow=False)
+            summary_layout = QVBoxLayout(summary_card)
+            summary_label = QLabel("   |   ".join(summary_bits), summary_card)
+            summary_label.setFont(parent.font_body)
+            summary_label.setStyleSheet(qss(color=colors["text"]))
+            summary_layout.addWidget(summary_label)
+            layout.addWidget(summary_card)
 
-            self.geometry("760x420")
-            _enable_horizontal_wheel_scroll(table)
+            self.resize(780, 440)
 
-        ctk.CTkButton(self, text="닫기", fg_color="transparent", border_width=1, command=self.destroy).pack(
-            pady=(0, 16)
-        )
+        close_btn = QPushButton("닫기", self)
+        close_btn.setStyleSheet(button_qss(colors, "transparent", colors["text"], border=colors["border"]))
+        close_btn.clicked.connect(self.close)
+        layout.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignHCenter)
 
         _bring_to_front(self)
 
 
-class RegionManagerDialog(ctk.CTkToplevel):
-    def __init__(self, master, on_change):
-        super().__init__(master)
-        self.title("즐겨찾기 편집")
-        self.geometry("480x560")
+def _qcolor(hex_str):
+    from PySide6.QtGui import QColor
+    return QColor(hex_str)
+
+
+def _set_cell(table, row, col, text, color_hex, font):
+    item = QTableWidgetItem(text)
+    item.setForeground(_qcolor(color_hex))
+    item.setFont(font)
+    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    table.setItem(row, col, item)
+
+
+class RegionManagerDialog(QDialog):
+    def __init__(self, parent, on_change):
+        super().__init__(parent)
+        colors = parent.colors
+        self.setWindowTitle("즐겨찾기 편집")
+        self.resize(480, 560)
         self.on_change = on_change
         self.favorites = set(config.get_favorites())
-        self.font_body = master.font_body
-        self.font_small = master.font_small
+        self.font_body = parent.font_body
+        self.font_small = parent.font_small
+        self.colors = colors
+        self.setStyleSheet(f"QDialog {{ background-color:{colors['bg']}; }}")
 
-        ctk.CTkLabel(
-            self,
-            text="지역을 검색해 즐겨찾기에 추가/삭제하세요.",
-            font=self.font_body,
-            anchor="w",
-        ).pack(fill="x", padx=16, pady=(16, 4))
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
 
-        self.search_var = tk.StringVar()
-        search_entry = ctk.CTkEntry(
-            self, textvariable=self.search_var, placeholder_text="예: 수원, 강남구, 안동시"
-        )
-        search_entry.pack(fill="x", padx=16, pady=(0, 8))
-        self.search_var.trace_add("write", lambda *_: self._render_results())
+        hint = QLabel("지역을 검색해 즐겨찾기에 추가/삭제하세요.", self)
+        hint.setFont(self.font_body)
+        hint.setStyleSheet(qss(color=colors["text"]))
+        layout.addWidget(hint)
 
-        self.results_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        self.results_frame.pack(fill="both", expand=True, padx=16, pady=8)
+        self.search_edit = QLineEdit(self)
+        self.search_edit.setPlaceholderText("예: 수원, 강남구, 안동시")
+        self.search_edit.textChanged.connect(self._render_results)
+        layout.addWidget(self.search_edit)
 
-        btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.pack(fill="x", padx=16, pady=(0, 16))
-        ctk.CTkButton(
-            btn_row, text="+ 위도/경도로 직접 추가", command=self._open_custom_region_form
-        ).pack(side="left")
-        ctk.CTkButton(btn_row, text="닫기", fg_color="transparent", border_width=1, command=self.destroy).pack(
-            side="right"
-        )
+        self.scroll = QScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self.results_frame = QWidget()
+        self.results_frame.setStyleSheet("background: transparent;")
+        self.results_layout = QVBoxLayout(self.results_frame)
+        self.results_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.scroll.setWidget(self.results_frame)
+        layout.addWidget(self.scroll, 1)
 
-        self.check_vars = {}
+        btn_row = QHBoxLayout()
+        add_btn = QPushButton("+ 위도/경도로 직접 추가", self)
+        add_btn.setStyleSheet(button_qss(colors, colors["accent"], colors["on_accent"]))
+        add_btn.clicked.connect(self._open_custom_region_form)
+        btn_row.addWidget(add_btn)
+        btn_row.addStretch(1)
+        close_btn = QPushButton("닫기", self)
+        close_btn.setStyleSheet(button_qss(colors, "transparent", colors["text"], border=colors["border"]))
+        close_btn.clicked.connect(self.close)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
         self._render_results()
         _bring_to_front(self)
 
     def _current_matches(self):
-        query = self.search_var.get().strip()
+        query = self.search_edit.text().strip()
         all_regions = regions.all_regions()
         if not query:
             names = sorted(self.favorites)
         else:
-            names = [n for n in all_regions if query in n]
-            names.sort()
+            names = sorted(n for n in all_regions if query in n)
         return names[:80]
 
-    def _render_results(self):
-        for widget in self.results_frame.winfo_children():
-            widget.destroy()
-        self.check_vars = {}
+    def _render_results(self, *_args):
+        _clear_layout(self.results_layout)
 
-        query = self.search_var.get().strip()
+        query = self.search_edit.text().strip()
         names = self._current_matches()
+        colors = self.colors
         if not query and not names:
-            ctk.CTkLabel(
-                self.results_frame,
-                text="아직 즐겨찾기가 없습니다. 위 검색창에 지역명을 입력하세요.",
-                font=self.font_small,
-                text_color=COLOR_SUBTEXT,
-            ).pack(anchor="w", pady=8)
+            label = QLabel("아직 즐겨찾기가 없습니다. 위 검색창에 지역명을 입력하세요.", self.results_frame)
+            label.setFont(self.font_small)
+            label.setStyleSheet(qss(color=colors["subtext"]))
+            self.results_layout.addWidget(label)
             return
         if query and not names:
-            ctk.CTkLabel(
-                self.results_frame, text="검색 결과가 없습니다.", font=self.font_small, text_color=COLOR_SUBTEXT
-            ).pack(anchor="w", pady=8)
+            label = QLabel("검색 결과가 없습니다.", self.results_frame)
+            label.setFont(self.font_small)
+            label.setStyleSheet(qss(color=colors["subtext"]))
+            self.results_layout.addWidget(label)
             return
 
         custom_names = set(regions.load_custom_regions().keys())
         for name in names:
-            var = tk.BooleanVar(value=name in self.favorites)
-            self.check_vars[name] = var
             label = name + ("  [직접 추가]" if name in custom_names else "")
-            ctk.CTkCheckBox(
-                self.results_frame,
-                text=label,
-                variable=var,
-                font=self.font_body,
-                command=lambda n=name, v=var: self._toggle(n, v),
-            ).pack(anchor="w", pady=3, fill="x")
+            checkbox = QCheckBox(label, self.results_frame)
+            checkbox.setFont(self.font_body)
+            checkbox.setStyleSheet(qss(color=colors["text"]))
+            checkbox.setChecked(name in self.favorites)
+            checkbox.stateChanged.connect(lambda _state, n=name, cb=checkbox: self._toggle(n, cb))
+            self.results_layout.addWidget(checkbox)
 
-    def _toggle(self, name, var):
-        if var.get():
+    def _toggle(self, name, checkbox):
+        if checkbox.isChecked():
             self.favorites.add(name)
             config.set_favorites(sorted(self.favorites))
             self.on_change(added=name)
@@ -342,149 +406,183 @@ class RegionManagerDialog(ctk.CTkToplevel):
         CustomRegionForm(self, self._render_results)
 
 
-class CustomRegionForm(ctk.CTkToplevel):
-    def __init__(self, master, on_saved):
-        super().__init__(master)
-        self.title("지역 직접 추가")
-        self.geometry("380x420")
+class CustomRegionForm(QDialog):
+    def __init__(self, parent, on_saved):
+        super().__init__(parent)
+        colors = parent.colors
+        self.setWindowTitle("지역 직접 추가")
+        self.resize(380, 420)
         self.on_saved = on_saved
+        self.setStyleSheet(f"QDialog {{ background-color:{colors['bg']}; }}")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
 
         fields = [
             ("name", "지역 이름 (예: 우리동네)"),
             ("lat", "위도 (예: 37.5665)"),
             ("lon", "경도 (예: 126.9780)"),
         ]
-        self.vars = {}
+        self.edits = {}
         for key, placeholder in fields:
-            ctk.CTkLabel(self, text=placeholder, anchor="w").pack(fill="x", padx=16, pady=(12, 2))
-            var = tk.StringVar()
-            ctk.CTkEntry(self, textvariable=var).pack(fill="x", padx=16)
-            self.vars[key] = var
+            label = QLabel(placeholder, self)
+            label.setStyleSheet(qss(color=colors["text"]))
+            layout.addWidget(label)
+            edit = QLineEdit(self)
+            layout.addWidget(edit)
+            self.edits[key] = edit
 
-        ctk.CTkLabel(self, text="시도 (중기예보 권역 판별용)", anchor="w").pack(fill="x", padx=16, pady=(12, 2))
-        self.sido_var = tk.StringVar(value=regions.SIDO_NAMES[0])
-        ctk.CTkOptionMenu(self, values=regions.SIDO_NAMES, variable=self.sido_var).pack(fill="x", padx=16)
+        sido_label = QLabel("시도 (중기예보 권역 판별용)", self)
+        sido_label.setStyleSheet(qss(color=colors["text"]))
+        layout.addWidget(sido_label)
+        self.sido_combo = QComboBox(self)
+        self.sido_combo.addItems(regions.SIDO_NAMES)
+        layout.addWidget(self.sido_combo)
 
-        ctk.CTkLabel(
+        note = QLabel(
+            "위도/경도는 구글맵 등 지도에서 원하는 위치를 우클릭하면 확인할 수 있습니다.",
             self,
-            text="위도/경도는 구글맵 등 지도에서 원하는 위치를 우클릭하면 확인할 수 있습니다.",
-            wraplength=340,
-            justify="left",
-            text_color=COLOR_SUBTEXT,
-            font=("", 11),
-        ).pack(fill="x", padx=16, pady=(12, 0))
-
-        btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.pack(fill="x", padx=16, pady=16, side="bottom")
-        ctk.CTkButton(btn_row, text="추가", command=self._save).pack(side="right")
-        ctk.CTkButton(btn_row, text="취소", fg_color="transparent", border_width=1, command=self.destroy).pack(
-            side="right", padx=8
         )
+        note.setWordWrap(True)
+        note.setStyleSheet(qss(color=colors["subtext"]))
+        layout.addWidget(note)
+        layout.addStretch(1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        cancel_btn = QPushButton("취소", self)
+        cancel_btn.setStyleSheet(button_qss(colors, "transparent", colors["text"], border=colors["border"]))
+        cancel_btn.clicked.connect(self.close)
+        btn_row.addWidget(cancel_btn)
+        save_btn = QPushButton("추가", self)
+        save_btn.setStyleSheet(button_qss(colors, colors["accent"], colors["on_accent"]))
+        save_btn.clicked.connect(self._save)
+        btn_row.addWidget(save_btn)
+        layout.addLayout(btn_row)
 
         _bring_to_front(self)
 
     def _save(self):
-        name = self.vars["name"].get().strip()
+        name = self.edits["name"].text().strip()
         try:
-            lat = float(self.vars["lat"].get().strip())
-            lon = float(self.vars["lon"].get().strip())
+            lat = float(self.edits["lat"].text().strip())
+            lon = float(self.edits["lon"].text().strip())
         except ValueError:
-            messagebox.showwarning("입력 오류", "위도/경도는 숫자로 입력하세요.", parent=self)
+            QMessageBox.warning(self, "입력 오류", "위도/경도는 숫자로 입력하세요.")
             return
         if not name:
-            messagebox.showwarning("입력 필요", "지역 이름을 입력하세요.", parent=self)
+            QMessageBox.warning(self, "입력 필요", "지역 이름을 입력하세요.")
             return
-        regions.add_custom_region(name, lat, lon, self.sido_var.get())
+        regions.add_custom_region(name, lat, lon, self.sido_combo.currentText())
         config.add_favorite(name)
-        self.master.favorites.add(name)
+        self.parent().favorites.add(name)
         self.on_saved()
-        self.master.on_change(added=name)
-        self.destroy()
+        self.parent().on_change(added=name)
+        self.close()
 
 
-class BranchRangeDialog(ctk.CTkToplevel):
+class BranchRangeDialog(QDialog):
     """지사 이름을 클릭하면 뜨는 창: 날짜와 시간대(시작~종료)를 골라 그 구간의
     누적강수량을 지사 관할 지역별로 비교하고, 가장 많은 지역을 하이라이트한다.
     지난 실측 2일 + 단기예보 날짜를 고를 수 있다. 중기예보(4일 이후)는 3시간 단위
     시간별 데이터를 제공하지 않아 날짜 선택 대상에서 제외한다."""
 
-    def __init__(self, master, branch_name, members, reports):
-        super().__init__(master)
-        self.title(f"{branch_name} - 시간대별 누적강수량")
-        self.geometry("460x580")
+    def __init__(self, parent, branch_name, members, reports):
+        super().__init__(parent)
+        colors = parent.colors
+        self.colors = colors
+        self.setWindowTitle(f"{branch_name} - 시간대별 누적강수량")
+        self.resize(460, 580)
         self.branch_name = branch_name
         self.members = members
         self.reports = reports
-        self.font_title = master.font_title
-        self.font_body = master.font_body
-        self.font_small = master.font_small
+        self.font_title = parent.font_title
+        self.font_body = parent.font_body
+        self.font_small = parent.font_small
+        self.setStyleSheet(f"QDialog {{ background-color:{colors['bg']}; }}")
 
-        ctk.CTkLabel(
-            self, text=f"{branch_name} 관할 지역 시간대별 누적강수량", font=self.font_title,
-            text_color=COLOR_TEXT, anchor="w",
-        ).pack(fill="x", padx=16, pady=(16, 4))
-        ctk.CTkLabel(
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        title = QLabel(f"{branch_name} 관할 지역 시간대별 누적강수량", self)
+        title.setFont(self.font_title)
+        title.setStyleSheet(qss(color=colors["text"]))
+        layout.addWidget(title)
+
+        note = QLabel(
+            "중기예보(4일 이후)는 시간별 데이터가 없어 선택할 수 없습니다.\n(지난 실측 2일은 선택 가능)",
             self,
-            text="중기예보(4일 이후)는 시간별 데이터가 없어 선택할 수 없습니다.\n(지난 실측 2일은 선택 가능)",
-            font=self.font_small, text_color=COLOR_SUBTEXT, anchor="w",
-        ).pack(fill="x", padx=16, pady=(0, 10))
+        )
+        note.setFont(self.font_small)
+        note.setStyleSheet(qss(color=colors["subtext"]))
+        layout.addWidget(note)
 
         self._date_labels = {}
         self.dates = self._short_term_dates()
 
         if not self.dates:
-            ctk.CTkLabel(
-                self,
-                text="선택 가능한 날짜가 없습니다.\n(즐겨찾기 조회가 끝난 뒤 다시 시도하세요)",
-                font=self.font_small, text_color=COLOR_SUBTEXT, justify="left",
-            ).pack(padx=16, pady=30)
-            ctk.CTkButton(self, text="닫기", fg_color="transparent", border_width=1, command=self.destroy).pack(
-                pady=(0, 16)
+            empty = QLabel(
+                "선택 가능한 날짜가 없습니다.\n(즐겨찾기 조회가 끝난 뒤 다시 시도하세요)", self
             )
+            empty.setFont(self.font_small)
+            empty.setStyleSheet(qss(color=colors["subtext"]))
+            layout.addWidget(empty)
+            layout.addStretch(1)
+            close_btn = QPushButton("닫기", self)
+            close_btn.setStyleSheet(button_qss(colors, "transparent", colors["text"], border=colors["border"]))
+            close_btn.clicked.connect(self.close)
+            layout.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignHCenter)
             _bring_to_front(self)
             return
 
-        picker_row = ctk.CTkFrame(self, fg_color="transparent")
-        picker_row.pack(fill="x", padx=16, pady=(0, 8))
-        picker_row.grid_columnconfigure(1, weight=1)
+        picker_row = QHBoxLayout()
+        date_label_hdr = QLabel("날짜", self)
+        date_label_hdr.setFont(self.font_body)
+        date_label_hdr.setStyleSheet(qss(color=colors["subtext"]))
+        picker_row.addWidget(date_label_hdr)
 
-        ctk.CTkLabel(picker_row, text="날짜", font=self.font_body, text_color=COLOR_SUBTEXT).grid(
-            row=0, column=0, padx=(0, 8), pady=4, sticky="w"
-        )
         date_labels = []
         for d in self.dates:
             label = f"{d[4:6]}/{d[6:8]}"
             self._date_labels[label] = d
             date_labels.append(label)
-        self.date_var = tk.StringVar(value=date_labels[0])
-        self.date_menu = ctk.CTkOptionMenu(
-            picker_row, values=date_labels, variable=self.date_var, command=self._on_date_changed,
-        )
-        self.date_menu.grid(row=0, column=1, padx=(0, 8), pady=4, sticky="ew")
+        self.date_combo = QComboBox(self)
+        self.date_combo.addItems(date_labels)
+        self.date_combo.currentTextChanged.connect(self._on_date_changed)
+        picker_row.addWidget(self.date_combo, 1)
+        layout.addLayout(picker_row)
 
-        time_row = ctk.CTkFrame(self, fg_color="transparent")
-        time_row.pack(fill="x", padx=16, pady=(0, 12))
-        ctk.CTkLabel(time_row, text="시작", font=self.font_body, text_color=COLOR_SUBTEXT).pack(side="left")
-        self.start_var = tk.StringVar()
-        self.start_menu = ctk.CTkOptionMenu(
-            time_row, values=["-"], variable=self.start_var, width=90,
-            command=lambda _v: self._render(),
-        )
-        self.start_menu.pack(side="left", padx=(6, 16))
-        ctk.CTkLabel(time_row, text="종료", font=self.font_body, text_color=COLOR_SUBTEXT).pack(side="left")
-        self.end_var = tk.StringVar()
-        self.end_menu = ctk.CTkOptionMenu(
-            time_row, values=["-"], variable=self.end_var, width=90,
-            command=lambda _v: self._render(),
-        )
-        self.end_menu.pack(side="left", padx=(6, 0))
+        time_row = QHBoxLayout()
+        start_hdr = QLabel("시작", self)
+        start_hdr.setFont(self.font_body)
+        start_hdr.setStyleSheet(qss(color=colors["subtext"]))
+        time_row.addWidget(start_hdr)
+        self.start_combo = QComboBox(self)
+        self.start_combo.currentTextChanged.connect(lambda _v: self._render())
+        time_row.addWidget(self.start_combo)
+        end_hdr = QLabel("종료", self)
+        end_hdr.setFont(self.font_body)
+        end_hdr.setStyleSheet(qss(color=colors["subtext"]))
+        time_row.addWidget(end_hdr)
+        self.end_combo = QComboBox(self)
+        self.end_combo.currentTextChanged.connect(lambda _v: self._render())
+        time_row.addWidget(self.end_combo)
+        time_row.addStretch(1)
+        layout.addLayout(time_row)
 
-        self.result_frame = ctk.CTkScrollableFrame(self, fg_color=COLOR_CARD, corner_radius=12)
-        self.result_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        self.result_scroll = QScrollArea(self)
+        self.result_scroll.setWidgetResizable(True)
+        result_card = make_card(self, colors, radius=12, shadow=False)
+        self.result_layout = QVBoxLayout(result_card)
+        self.result_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.result_scroll.setWidget(result_card)
+        self.result_scroll.setStyleSheet("QScrollArea { border: none; }")
+        layout.addWidget(self.result_scroll, 1)
 
-        ctk.CTkButton(self, text="닫기", fg_color="transparent", border_width=1, command=self.destroy).pack(
-            pady=(0, 16)
-        )
+        close_btn = QPushButton("닫기", self)
+        close_btn.setStyleSheet(button_qss(colors, "transparent", colors["text"], border=colors["border"]))
+        close_btn.clicked.connect(self.close)
+        layout.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignHCenter)
 
         self._on_date_changed(date_labels[0])
         _bring_to_front(self)
@@ -527,12 +625,16 @@ class BranchRangeDialog(ctk.CTkToplevel):
         hours = self._hour_options(date_str)
         start_values = [f"{h:02d}시" for h in hours]
         end_values = [f"{h:02d}시" for h in hours[1:]] + ["24시"]
-        self.start_menu.configure(values=start_values or ["-"])
-        self.end_menu.configure(values=end_values or ["-"])
-        if start_values:
-            self.start_var.set(start_values[0])
+        self.start_combo.blockSignals(True)
+        self.end_combo.blockSignals(True)
+        self.start_combo.clear()
+        self.start_combo.addItems(start_values or ["-"])
+        self.end_combo.clear()
+        self.end_combo.addItems(end_values or ["-"])
         if end_values:
-            self.end_var.set(end_values[-1])
+            self.end_combo.setCurrentIndex(len(end_values) - 1)
+        self.start_combo.blockSignals(False)
+        self.end_combo.blockSignals(False)
         self._render()
 
     def _selected_hour(self, label):
@@ -541,19 +643,19 @@ class BranchRangeDialog(ctk.CTkToplevel):
         return int(label[:2])
 
     def _render(self):
-        for widget in self.result_frame.winfo_children():
-            widget.destroy()
+        _clear_layout(self.result_layout)
 
-        date_str = self._date_labels.get(self.date_var.get())
-        start_hour = self._selected_hour(self.start_var.get())
-        end_hour = self._selected_hour(self.end_var.get())
+        colors = self.colors
+        date_str = self._date_labels.get(self.date_combo.currentText())
+        start_hour = self._selected_hour(self.start_combo.currentText())
+        end_hour = self._selected_hour(self.end_combo.currentText())
         if date_str is None or start_hour is None or end_hour is None:
             return
         if start_hour >= end_hour:
-            ctk.CTkLabel(
-                self.result_frame, text="시작 시각은 종료 시각보다 앞서야 합니다.", font=self.font_small,
-                text_color=COLOR_WARN_TEXT,
-            ).pack(padx=16, pady=16)
+            warn = QLabel("시작 시각은 종료 시각보다 앞서야 합니다.", self)
+            warn.setFont(self.font_small)
+            warn.setStyleSheet(qss(color=colors["warn_text"]))
+            self.result_layout.addWidget(warn)
             return
 
         rows = []
@@ -577,128 +679,152 @@ class BranchRangeDialog(ctk.CTkToplevel):
                 best_amount = amount
                 best_name = name
 
-        ctk.CTkLabel(
-            self.result_frame,
-            text=f"{date_str[4:6]}/{date_str[6:8]}  {start_hour:02d}시~{end_hour:02d}시 누적강수량",
-            font=self.font_body, text_color=COLOR_TEXT, anchor="w",
-        ).pack(fill="x", padx=12, pady=(12, 6))
+        header = QLabel(
+            f"{date_str[4:6]}/{date_str[6:8]}  {start_hour:02d}시~{end_hour:02d}시 누적강수량", self
+        )
+        header.setFont(self.font_body)
+        header.setStyleSheet(qss(color=colors["text"]))
+        self.result_layout.addWidget(header)
 
         for name, pcp_text, amount in rows:
             is_best = name == best_name and best_amount > 0
-            row = ctk.CTkFrame(
-                self.result_frame, fg_color=(COLOR_WARN_BG if is_best else "transparent"), corner_radius=8,
-            )
-            row.pack(fill="x", padx=12, pady=3)
-            ctk.CTkLabel(
-                row, text=name, font=self.font_body,
-                text_color=(COLOR_WARN_TEXT if is_best else COLOR_TEXT), anchor="w",
-            ).pack(side="left", padx=(10, 0), pady=8, fill="x", expand=True)
-            ctk.CTkLabel(
-                row, text=("★ " if is_best else "") + pcp_text,
-                font=ctk.CTkFont(family=self.font_body.cget("family"), size=13, weight=("bold" if is_best else "normal")),
-                text_color=(COLOR_WARN_TEXT if is_best else COLOR_TEXT), anchor="e",
-            ).pack(side="right", padx=(0, 10), pady=8)
+            row = QFrame(self)
+            row.setStyleSheet(qss(bg=(colors["warn_bg"] if is_best else "transparent"), radius=8))
+            row_layout = QHBoxLayout(row)
+            name_label = QLabel(name, row)
+            name_label.setFont(self.font_body)
+            name_label.setStyleSheet(qss(color=(colors["warn_text"] if is_best else colors["text"])))
+            row_layout.addWidget(name_label, 1)
+            value_label = QLabel(("★ " if is_best else "") + pcp_text, row)
+            value_font = QFont(self.font_body)
+            value_font.setBold(is_best)
+            value_label.setFont(value_font)
+            value_label.setStyleSheet(qss(color=(colors["warn_text"] if is_best else colors["text"])))
+            row_layout.addWidget(value_label)
+            self.result_layout.addWidget(row)
 
 
-class BranchManagerDialog(ctk.CTkToplevel):
+class BranchManagerDialog(QDialog):
     """지사(관할 구역) 관리: 지사별로 어떤 즐겨찾기 지역이 속하는지 편집.
     '즐겨찾기 종합 보기'에서 지사 단위로 묶어서 보여주는 데 쓰인다."""
 
-    def __init__(self, master, on_change):
-        super().__init__(master)
-        self.title("지사 관리")
-        self.geometry("460x600")
+    def __init__(self, parent, on_change):
+        super().__init__(parent)
+        colors = parent.colors
+        self.colors = colors
+        self.setWindowTitle("지사 관리")
+        self.resize(460, 600)
         self.on_change = on_change
-        self.font_body = master.font_body
-        self.font_small = master.font_small
+        self.font_body = parent.font_body
+        self.font_small = parent.font_small
+        self.setStyleSheet(f"QDialog {{ background-color:{colors['bg']}; }}")
 
-        ctk.CTkLabel(
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        note = QLabel(
+            "지사별로 즐겨찾기 지역을 묶어서 관리합니다. 지역 하나가 여러 지사에\n동시에 속할 수도 있습니다.",
             self,
-            text="지사별로 즐겨찾기 지역을 묶어서 관리합니다. 지역 하나가 여러 지사에\n"
-            "동시에 속할 수도 있습니다.",
-            font=self.font_small,
-            text_color=COLOR_SUBTEXT,
-            justify="left",
-            anchor="w",
-        ).pack(fill="x", padx=16, pady=(16, 8))
-
-        self.list_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        self.list_frame.pack(fill="both", expand=True, padx=16, pady=8)
-
-        btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.pack(fill="x", padx=16, pady=(0, 16))
-        ctk.CTkButton(btn_row, text="+ 새 지사 추가", command=self._add_branch).pack(side="left")
-        ctk.CTkButton(btn_row, text="닫기", fg_color="transparent", border_width=1, command=self.destroy).pack(
-            side="right"
         )
+        note.setFont(self.font_small)
+        note.setStyleSheet(qss(color=colors["subtext"]))
+        layout.addWidget(note)
+
+        self.scroll = QScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self.list_frame = QWidget()
+        self.list_frame.setStyleSheet("background: transparent;")
+        self.list_layout = QVBoxLayout(self.list_frame)
+        self.list_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.scroll.setWidget(self.list_frame)
+        layout.addWidget(self.scroll, 1)
+
+        btn_row = QHBoxLayout()
+        add_btn = QPushButton("+ 새 지사 추가", self)
+        add_btn.setStyleSheet(button_qss(colors, colors["accent"], colors["on_accent"]))
+        add_btn.clicked.connect(self._add_branch)
+        btn_row.addWidget(add_btn)
+        btn_row.addStretch(1)
+        close_btn = QPushButton("닫기", self)
+        close_btn.setStyleSheet(button_qss(colors, "transparent", colors["text"], border=colors["border"]))
+        close_btn.clicked.connect(self.close)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
 
         self._render()
         _bring_to_front(self)
 
     def _render(self):
-        for widget in self.list_frame.winfo_children():
-            widget.destroy()
+        _clear_layout(self.list_layout)
 
+        colors = self.colors
         branches = config.get_branches()
         if not branches:
-            ctk.CTkLabel(
-                self.list_frame, text="아직 지사가 없습니다. '+ 새 지사 추가'로 만드세요.",
-                font=self.font_small, text_color=COLOR_SUBTEXT,
-            ).pack(anchor="w", pady=8)
+            empty = QLabel("아직 지사가 없습니다. '+ 새 지사 추가'로 만드세요.", self.list_frame)
+            empty.setFont(self.font_small)
+            empty.setStyleSheet(qss(color=colors["subtext"]))
+            self.list_layout.addWidget(empty)
             return
 
-        favorites = config.get_favorites()
         for branch_name in sorted(branches):
-            section = ctk.CTkFrame(self.list_frame, fg_color=COLOR_CARD, corner_radius=12)
-            section.pack(fill="x", pady=6)
+            section = make_card(self.list_frame, colors, radius=12, shadow=False)
+            section_layout = QVBoxLayout(section)
 
-            header = ctk.CTkFrame(section, fg_color="transparent")
-            header.pack(fill="x", padx=12, pady=(10, 4))
-            ctk.CTkLabel(header, text=branch_name, font=self.font_body, text_color=COLOR_TEXT, anchor="w").pack(
-                side="left"
-            )
-            ctk.CTkButton(
-                header, text="지사 삭제", width=70, fg_color="transparent", border_width=1,
-                text_color=COLOR_WARN_TEXT, command=lambda b=branch_name: self._remove_branch(b),
-            ).pack(side="right")
+            header = QHBoxLayout()
+            name_label = QLabel(branch_name, section)
+            name_label.setFont(self.font_body)
+            name_label.setStyleSheet(qss(color=colors["text"]))
+            header.addWidget(name_label, 1)
+            del_btn = QPushButton("지사 삭제", section)
+            del_btn.setStyleSheet(button_qss(colors, "transparent", colors["warn_text"], border=colors["border"]))
+            del_btn.clicked.connect(lambda _c=False, b=branch_name: self._remove_branch(b))
+            header.addWidget(del_btn)
+            section_layout.addLayout(header)
 
             for region_name in branches[branch_name]:
-                row = ctk.CTkFrame(section, fg_color="transparent")
-                row.pack(fill="x", padx=12, pady=2)
-                ctk.CTkLabel(
-                    row, text=region_name, font=self.font_small, text_color=COLOR_SUBTEXT, anchor="w"
-                ).pack(side="left", fill="x", expand=True)
-                ctk.CTkButton(
-                    row, text="제거", width=50, fg_color="transparent", border_width=1,
-                    command=lambda b=branch_name, r=region_name: self._remove_region(b, r),
-                ).pack(side="right")
+                row = QHBoxLayout()
+                region_label = QLabel(region_name, section)
+                region_label.setFont(self.font_small)
+                region_label.setStyleSheet(qss(color=colors["subtext"]))
+                row.addWidget(region_label, 1)
+                remove_btn = QPushButton("제거", section)
+                remove_btn.setStyleSheet(button_qss(colors, "transparent", colors["text"], border=colors["border"]))
+                remove_btn.clicked.connect(
+                    lambda _c=False, b=branch_name, r=region_name: self._remove_region(b, r)
+                )
+                row.addWidget(remove_btn)
+                section_layout.addLayout(row)
 
-            add_row = ctk.CTkFrame(section, fg_color="transparent")
-            add_row.pack(fill="x", padx=12, pady=(4, 10))
-            search_var = tk.StringVar()
-            entry = ctk.CTkEntry(
-                add_row, textvariable=search_var, placeholder_text="즐겨찾기 지역 검색해서 추가"
+            add_row = QHBoxLayout()
+            search_edit = QLineEdit(section)
+            search_edit.setPlaceholderText("즐겨찾기 지역 검색해서 추가")
+            add_row.addWidget(search_edit, 1)
+            add_btn = QPushButton("추가", section)
+            add_btn.setStyleSheet(button_qss(colors, colors["accent"], colors["on_accent"]))
+            add_btn.clicked.connect(
+                lambda _c=False, b=branch_name, e=search_edit: self._add_region_from_search(b, e)
             )
-            entry.pack(side="left", fill="x", expand=True)
-            ctk.CTkButton(
-                add_row, text="추가", width=60,
-                command=lambda b=branch_name, v=search_var: self._add_region_from_search(b, v),
-            ).pack(side="left", padx=(6, 0))
+            add_row.addWidget(add_btn)
+            section_layout.addLayout(add_row)
 
-    def _add_region_from_search(self, branch_name, search_var):
-        query = search_var.get().strip()
+            self.list_layout.addWidget(section)
+
+    def _add_region_from_search(self, branch_name, search_edit):
+        query = search_edit.text().strip()
         if not query:
             return
         favorites = config.get_favorites()
         matches = [n for n in favorites if query in n]
         if not matches:
-            messagebox.showinfo("검색 결과 없음", "일치하는 즐겨찾기 지역이 없습니다. 먼저 즐겨찾기에 추가하세요.", parent=self)
+            QMessageBox.information(
+                self, "검색 결과 없음", "일치하는 즐겨찾기 지역이 없습니다. 먼저 즐겨찾기에 추가하세요."
+            )
             return
         if len(matches) > 1:
-            messagebox.showinfo(
-                "여러 개 일치",
+            QMessageBox.information(
+                self, "여러 개 일치",
                 "검색어와 일치하는 지역이 여러 개입니다:\n" + "\n".join(matches[:10]) + "\n더 구체적으로 입력하세요.",
-                parent=self,
             )
             return
         config.add_region_to_branch(branch_name, matches[0])
@@ -716,72 +842,93 @@ class BranchManagerDialog(ctk.CTkToplevel):
         self.on_change()
 
     def _add_branch(self):
-        name = simpledialog.askstring("새 지사 추가", "지사 이름:", parent=self)
-        if not name:
+        name, ok = QInputDialog.getText(self, "새 지사 추가", "지사 이름:")
+        if not ok or not name.strip():
             return
         config.add_branch(name.strip())
         self._render()
         self.on_change()
 
 
-class SettingsDialog(ctk.CTkToplevel):
-    def __init__(self, master, on_change):
-        super().__init__(master)
-        self.title("설정 - 기상청 서비스키")
-        self.geometry("520x200")
+class SettingsDialog(QDialog):
+    def __init__(self, parent, on_change):
+        super().__init__(parent)
+        colors = parent.colors
+        self.setWindowTitle("설정 - 기상청 서비스키")
+        self.resize(520, 200)
         self.on_change = on_change
+        self.setStyleSheet(f"QDialog {{ background-color:{colors['bg']}; }}")
 
-        ctk.CTkLabel(
-            self,
-            text="공공데이터포털(data.go.kr)에서 발급받은 서비스키(디코딩 키)를 입력하세요.",
-            wraplength=470,
-            justify="left",
-        ).pack(padx=16, pady=(16, 8), anchor="w")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
 
-        self.key_var = tk.StringVar(value=config.get_service_key())
-        self.entry = ctk.CTkEntry(self, textvariable=self.key_var, width=460, show="*")
-        self.entry.pack(padx=16, fill="x")
+        note = QLabel("공공데이터포털(data.go.kr)에서 발급받은 서비스키(디코딩 키)를 입력하세요.", self)
+        note.setWordWrap(True)
+        note.setStyleSheet(qss(color=colors["text"]))
+        layout.addWidget(note)
 
-        self.show_var = tk.BooleanVar(value=False)
-        ctk.CTkCheckBox(self, text="키 표시", variable=self.show_var, command=self._toggle_show).pack(
-            anchor="w", padx=16, pady=8
-        )
+        self.key_edit = QLineEdit(self)
+        self.key_edit.setText(config.get_service_key())
+        self.key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        layout.addWidget(self.key_edit)
 
-        btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.pack(fill="x", padx=16, pady=12, side="bottom")
-        ctk.CTkButton(btn_row, text="저장", command=self._save).pack(side="right")
-        ctk.CTkButton(btn_row, text="취소", fg_color="transparent", border_width=1, command=self.destroy).pack(
-            side="right", padx=8
-        )
+        self.show_checkbox = QCheckBox("키 표시", self)
+        self.show_checkbox.setStyleSheet(qss(color=colors["text"]))
+        self.show_checkbox.stateChanged.connect(self._toggle_show)
+        layout.addWidget(self.show_checkbox)
+        layout.addStretch(1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        cancel_btn = QPushButton("취소", self)
+        cancel_btn.setStyleSheet(button_qss(colors, "transparent", colors["text"], border=colors["border"]))
+        cancel_btn.clicked.connect(self.close)
+        btn_row.addWidget(cancel_btn)
+        save_btn = QPushButton("저장", self)
+        save_btn.setStyleSheet(button_qss(colors, colors["accent"], colors["on_accent"]))
+        save_btn.clicked.connect(self._save)
+        btn_row.addWidget(save_btn)
+        layout.addLayout(btn_row)
 
         _bring_to_front(self)
 
     def _toggle_show(self):
-        self.entry.configure(show="" if self.show_var.get() else "*")
+        self.key_edit.setEchoMode(
+            QLineEdit.EchoMode.Normal if self.show_checkbox.isChecked() else QLineEdit.EchoMode.Password
+        )
 
     def _save(self):
-        config.set_service_key(self.key_var.get().strip())
+        config.set_service_key(self.key_edit.text().strip())
         self.on_change()
-        self.destroy()
+        self.close()
 
 
-class WeatherDutyApp(ctk.CTk):
+# ---------------------------------------------------------------------------
+# 메인 윈도우
+# ---------------------------------------------------------------------------
+
+
+class _FetchBridge(QObject):
+    all_done = Signal(int, object, object)
+    one_done = Signal(str, object)
+
+
+class WeatherDutyApp(QMainWindow):
     def __init__(self):
-        ctk.set_appearance_mode("System")
-        ctk.set_default_color_theme("blue")
         super().__init__()
+        self.theme = theme.ThemeManager()
+        self.theme.changed.connect(self._on_theme_changed)
+        self.colors = self.theme.colors
 
-        self.title("폭염·풍수해·제설 근무 날씨 모니터")
-        self.geometry("1180x700")
-        self.minsize(960, 600)
-        self.configure(fg_color=COLOR_BG)
+        self.setWindowTitle("폭염·풍수해·제설 근무 날씨 모니터")
+        self.resize(1180, 700)
+        self.setMinimumSize(960, 600)
 
-        family = _pick_font_family()
-        self.font_display = ctk.CTkFont(family=family, size=46, weight="bold")
-        self.font_title = ctk.CTkFont(family=family, size=19, weight="bold")
-        self.font_subtitle = ctk.CTkFont(family=family, size=14)
-        self.font_body = ctk.CTkFont(family=family, size=13)
-        self.font_small = ctk.CTkFont(family=family, size=11)
+        self.font_display = theme.font(46, QFont.Weight.Bold)
+        self.font_title = theme.font(19, QFont.Weight.Bold)
+        self.font_subtitle = theme.font(14, QFont.Weight.Medium)
+        self.font_body = theme.font(13, QFont.Weight.Normal)
+        self.font_small = theme.font(11, QFont.Weight.Normal)
 
         config.seed_default_branches_if_needed()
 
@@ -793,135 +940,270 @@ class WeatherDutyApp(ctk.CTk):
         self._label_to_date = {}
         self._fetch_seq = 0
 
+        self._bridge = _FetchBridge()
+        self._bridge.all_done.connect(self._apply_fetch_result)
+        self._bridge.one_done.connect(self._merge_one_report)
+
+        central = QWidget(self)
+        self.setCentralWidget(central)
+        self.root_layout = QVBoxLayout(central)
+        self.root_layout.setContentsMargins(16, 14, 16, 16)
+        self.root_layout.setSpacing(6)
+
         self._build_toolbar()
         self._build_layout()
-        self.after(200, self.refresh_all)
+        self._apply_window_style()
+
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(200, self.refresh_all)
+
+    # ---------- style ----------
+    def _apply_window_style(self):
+        self.centralWidget().setStyleSheet(f"background-color:{self.colors['bg']};")
+
+    def _on_theme_changed(self):
+        self.colors = self.theme.colors
+        self._apply_window_style()
+        self._rebuild_ui()
+
+    def _rebuild_ui(self):
+        # 팔레트가 바뀌면 위젯을 통째로 다시 만든다 (customtkinter처럼 색이
+        # 자동으로 안 바뀌므로, 매번 렌더링 함수가 위젯을 새로 그리는 이 앱의
+        # 구조를 그대로 활용한다).
+        old_central = self.centralWidget()
+        central = QWidget(self)
+        self.setCentralWidget(central)
+        self.root_layout = QVBoxLayout(central)
+        self.root_layout.setContentsMargins(16, 14, 16, 16)
+        self.root_layout.setSpacing(6)
+        self._build_toolbar()
+        self._build_layout()
+        self._apply_window_style()
+        old_central.setParent(None)
+        old_central.deleteLater()
+        self._sync_view_mode_widgets()
+        self._refresh_current_view()
 
     # ---------- layout ----------
     def _build_toolbar(self):
-        toolbar = ctk.CTkFrame(self, fg_color="transparent", height=56)
-        toolbar.pack(fill="x", padx=16, pady=(14, 6))
+        colors = self.colors
+        toolbar = QWidget(self)
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
 
-        ctk.CTkLabel(
-            toolbar, text="폭염·풍수해·제설 근무 날씨 모니터", font=self.font_title, text_color=COLOR_TEXT
-        ).pack(side="left")
+        title = QLabel("폭염·풍수해·제설 근무 날씨 모니터", toolbar)
+        title.setFont(self.font_title)
+        title.setStyleSheet(qss(color=colors["text"]))
+        toolbar_layout.addWidget(title)
+        toolbar_layout.addStretch(1)
 
-        self.status_label = ctk.CTkLabel(toolbar, text="", font=self.font_small, text_color=COLOR_SUBTEXT)
-        self.status_label.pack(side="right", padx=(12, 0))
+        self.status_label = QLabel("", toolbar)
+        self.status_label.setFont(self.font_small)
+        self.status_label.setStyleSheet(qss(color=colors["subtext"]))
+        toolbar_layout.addWidget(self.status_label)
 
-        ctk.CTkButton(toolbar, text="설정", width=84, command=self._open_settings).pack(side="right", padx=4)
-        ctk.CTkButton(toolbar, text="지사 관리", width=90, command=self._open_branch_manager).pack(
-            side="right", padx=4
-        )
-        ctk.CTkButton(toolbar, text="즐겨찾기 편집", width=110, command=self._open_region_manager).pack(
-            side="right", padx=4
-        )
-        self.view_toggle_btn = ctk.CTkButton(
-            toolbar, text="즐겨찾기 종합 보기", width=140, command=self._toggle_view_mode
-        )
-        self.view_toggle_btn.pack(side="right", padx=4)
-        ctk.CTkButton(toolbar, text="새로고침", width=84, command=self.refresh_all).pack(side="right", padx=4)
+        refresh_btn = QPushButton("새로고침", toolbar)
+        refresh_btn.setStyleSheet(button_qss(colors, "transparent", colors["text"], border=colors["border"]))
+        refresh_btn.clicked.connect(self.refresh_all)
+        toolbar_layout.addWidget(refresh_btn)
+
+        self.view_toggle_btn = QPushButton("즐겨찾기 종합 보기", toolbar)
+        self.view_toggle_btn.setStyleSheet(button_qss(colors, "transparent", colors["text"], border=colors["border"]))
+        self.view_toggle_btn.clicked.connect(self._toggle_view_mode)
+        toolbar_layout.addWidget(self.view_toggle_btn)
+
+        region_btn = QPushButton("즐겨찾기 편집", toolbar)
+        region_btn.setStyleSheet(button_qss(colors, "transparent", colors["text"], border=colors["border"]))
+        region_btn.clicked.connect(self._open_region_manager)
+        toolbar_layout.addWidget(region_btn)
+
+        branch_btn = QPushButton("지사 관리", toolbar)
+        branch_btn.setStyleSheet(button_qss(colors, "transparent", colors["text"], border=colors["border"]))
+        branch_btn.clicked.connect(self._open_branch_manager)
+        toolbar_layout.addWidget(branch_btn)
+
+        settings_btn = QPushButton("설정", toolbar)
+        settings_btn.setStyleSheet(button_qss(colors, "transparent", colors["text"], border=colors["border"]))
+        settings_btn.clicked.connect(self._open_settings)
+        toolbar_layout.addWidget(settings_btn)
+
+        for btn in (refresh_btn, self.view_toggle_btn, region_btn, branch_btn, settings_btn):
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.root_layout.addWidget(toolbar)
 
     def _build_layout(self):
-        body = ctk.CTkFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+        colors = self.colors
+        body = QWidget(self)
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(16)
+        self.root_layout.addWidget(body, 1)
 
-        sidebar = ctk.CTkFrame(body, width=250, fg_color=COLOR_CARD, corner_radius=16)
-        sidebar.pack(side="left", fill="y")
-        sidebar.pack_propagate(False)
+        sidebar = make_card(body, colors, radius=16)
+        sidebar.setFixedWidth(250)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(16, 16, 8, 8)
+        body_layout.addWidget(sidebar)
 
-        ctk.CTkLabel(
-            sidebar, text="즐겨찾기 지역", font=self.font_body, text_color=COLOR_SUBTEXT, anchor="w"
-        ).pack(fill="x", padx=16, pady=(16, 8))
+        sidebar_hdr = QLabel("즐겨찾기 지역", sidebar)
+        sidebar_hdr.setFont(self.font_body)
+        sidebar_hdr.setStyleSheet(qss(color=colors["subtext"]))
+        sidebar_layout.addWidget(sidebar_hdr)
 
-        self.favorites_frame = ctk.CTkScrollableFrame(sidebar, fg_color="transparent")
-        self.favorites_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.favorites_scroll = QScrollArea(sidebar)
+        self.favorites_scroll.setWidgetResizable(True)
+        self.favorites_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self.favorites_frame = QWidget()
+        self.favorites_frame.setStyleSheet("background: transparent;")
+        self.favorites_layout = QVBoxLayout(self.favorites_frame)
+        self.favorites_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.favorites_scroll.setWidget(self.favorites_frame)
+        sidebar_layout.addWidget(self.favorites_scroll, 1)
 
-        self.main_frame = ctk.CTkFrame(body, fg_color="transparent")
-        self.main_frame.pack(side="left", fill="both", expand=True, padx=(16, 0))
+        self.stack = QStackedWidget(body)
+        body_layout.addWidget(self.stack, 1)
 
-        self.detail_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        self.summary_container = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        self.summary_date_bar = ctk.CTkFrame(self.summary_container, fg_color=COLOR_CARD, corner_radius=16)
-        self.summary_date_bar.pack(fill="x", pady=(0, 12))
-        ctk.CTkLabel(
-            self.summary_date_bar, text="날짜 선택", font=self.font_body, text_color=COLOR_SUBTEXT,
-        ).pack(side="left", padx=(16, 8), pady=12)
-        self.summary_date_selector = ctk.CTkSegmentedButton(
-            self.summary_date_bar, command=self._on_summary_date_selected
-        )
-        self.summary_date_selector.pack(side="left", padx=(0, 16), pady=12, fill="x", expand=True)
-        self.summary_frame = ctk.CTkScrollableFrame(
-            self.summary_container, fg_color=COLOR_CARD, corner_radius=16
-        )
-        self.summary_frame.pack(fill="both", expand=True)
+        self.detail_page = QWidget(self.stack)
+        self._build_detail_widgets(self.detail_page)
+        self.stack.addWidget(self.detail_page)
 
-        self._build_detail_widgets(self.detail_frame)
-        self.detail_frame.pack(fill="both", expand=True)
+        self.summary_page = QWidget(self.stack)
+        self._build_summary_widgets(self.summary_page)
+        self.stack.addWidget(self.summary_page)
+
+        self.stack.setCurrentWidget(self.detail_page)
 
     def _build_detail_widgets(self, parent):
-        header = ctk.CTkFrame(parent, fg_color=COLOR_CARD, corner_radius=16)
-        header.pack(fill="x", pady=(0, 12))
+        colors = self.colors
+        layout = QVBoxLayout(parent)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
 
-        top_row = ctk.CTkFrame(header, fg_color="transparent")
-        top_row.pack(fill="x", padx=20, pady=(18, 0))
-        self.region_name_label = ctk.CTkLabel(
-            top_row, text="즐겨찾기 지역을 선택하세요", font=self.font_title, text_color=COLOR_TEXT, anchor="w"
+        header = make_card(parent, colors, radius=16)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(20, 18, 20, 18)
+        layout.addWidget(header)
+
+        top_row = QHBoxLayout()
+        self.region_name_label = QLabel("즐겨찾기 지역을 선택하세요", header)
+        self.region_name_label.setFont(self.font_title)
+        self.region_name_label.setStyleSheet(qss(color=colors["text"]))
+        top_row.addWidget(self.region_name_label)
+        top_row.addStretch(1)
+        self.obs_time_label = QLabel("", header)
+        self.obs_time_label.setFont(self.font_small)
+        self.obs_time_label.setStyleSheet(qss(color=colors["subtext"]))
+        top_row.addWidget(self.obs_time_label)
+        header_layout.addLayout(top_row)
+
+        current_row = QHBoxLayout()
+        self.temp_label = QLabel("-℃", header)
+        self.temp_label.setFont(self.font_display)
+        self.temp_label.setStyleSheet(qss(color=colors["text"]))
+        current_row.addWidget(self.temp_label)
+
+        detail_col = QVBoxLayout()
+        self.rain_label = QLabel("1시간 강수량 -mm", header)
+        self.rain_label.setFont(self.font_body)
+        self.rain_label.setStyleSheet(qss(color=colors["subtext"]))
+        detail_col.addWidget(self.rain_label)
+        self.error_label = QLabel("", header)
+        self.error_label.setFont(self.font_small)
+        self.error_label.setStyleSheet(qss(color=colors["warn_text"]))
+        self.error_label.setWordWrap(True)
+        detail_col.addWidget(self.error_label)
+        current_row.addLayout(detail_col)
+        current_row.addStretch(1)
+        header_layout.addLayout(current_row)
+
+        self.warning_banner = QLabel("현재 발효 중인 특보 없음", header)
+        self.warning_banner.setFont(self.font_body)
+        self.warning_banner.setWordWrap(True)
+        self.warning_banner.setStyleSheet(qss(color=colors["ok_text"], bg=colors["ok_bg"], radius=10, pad="10px"))
+        header_layout.addWidget(self.warning_banner)
+
+        sub_hdr = QLabel("지난 실측 2일 + 향후 예보 (가져올 수 있는 최대 기간)", parent)
+        sub_hdr.setFont(self.font_body)
+        sub_hdr.setStyleSheet(qss(color=colors["subtext"]))
+        layout.addWidget(sub_hdr)
+
+        self.forecast_scroll = QScrollArea(parent)
+        self.forecast_scroll.setWidgetResizable(True)
+        forecast_card = make_card(parent, colors, radius=16)
+        self.forecast_layout = QVBoxLayout(forecast_card)
+        self.forecast_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.forecast_scroll.setWidget(forecast_card)
+        self.forecast_scroll.setStyleSheet("QScrollArea { border: none; }")
+        layout.addWidget(self.forecast_scroll, 1)
+
+    def _build_summary_widgets(self, parent):
+        colors = self.colors
+        layout = QVBoxLayout(parent)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        date_bar = make_card(parent, colors, radius=16, shadow=False)
+        date_bar_layout = QHBoxLayout(date_bar)
+        date_bar_layout.setContentsMargins(16, 12, 16, 12)
+        date_hdr = QLabel("날짜 선택", date_bar)
+        date_hdr.setFont(self.font_body)
+        date_hdr.setStyleSheet(qss(color=colors["subtext"]))
+        date_bar_layout.addWidget(date_hdr)
+        self.summary_date_selector = SegmentedControl(date_bar, colors)
+        self.summary_date_selector.currentChanged.connect(self._on_summary_date_selected)
+        date_bar_layout.addWidget(self.summary_date_selector, 1)
+        layout.addWidget(date_bar)
+
+        self.summary_hint = QLabel(
+            "※ 지사명을 클릭하면 원하는 날짜·시간대의 누적강수량을 관할 지역별로 비교할 수 있습니다.",
+            parent,
         )
-        self.region_name_label.pack(side="left")
-        self.obs_time_label = ctk.CTkLabel(top_row, text="", font=self.font_small, text_color=COLOR_SUBTEXT)
-        self.obs_time_label.pack(side="right")
+        self.summary_hint.setFont(self.font_small)
+        self.summary_hint.setStyleSheet(qss(color=colors["subtext"]))
+        layout.addWidget(self.summary_hint)
 
-        current_row = ctk.CTkFrame(header, fg_color="transparent")
-        current_row.pack(fill="x", padx=20, pady=(4, 4))
-        self.temp_label = ctk.CTkLabel(current_row, text="-℃", font=self.font_display, text_color=COLOR_TEXT)
-        self.temp_label.pack(side="left")
-
-        detail_col = ctk.CTkFrame(current_row, fg_color="transparent")
-        detail_col.pack(side="left", padx=(16, 0), pady=(10, 0))
-        self.rain_label = ctk.CTkLabel(
-            detail_col, text="1시간 강수량 -mm", font=self.font_body, text_color=COLOR_SUBTEXT, anchor="w"
+        self.summary_table = QTableWidget(parent)
+        self.summary_table.setColumnCount(7)
+        self.summary_table.setHorizontalHeaderLabels(
+            ["지사", "지역", "최저/최고", "체감 최저/최고", "강수확률", "강수량(00~24시 누적)", "특보"]
         )
-        self.rain_label.pack(anchor="w")
-        self.error_label = ctk.CTkLabel(
-            detail_col, text="", font=self.font_small, text_color=COLOR_WARN_TEXT, anchor="w", justify="left",
-            wraplength=650,
+        self.summary_table.verticalHeader().hide()
+        self.summary_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.summary_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.summary_table.setShowGrid(False)
+        self.summary_table.horizontalHeader().setStretchLastSection(False)
+        self.summary_table.setSizeAdjustPolicy(QAbstractScrollArea.SizeAdjustPolicy.AdjustToContents)
+        self.summary_table.cellDoubleClicked.connect(self._on_summary_cell_double_clicked)
+        self.summary_table.cellClicked.connect(self._on_summary_cell_clicked)
+        layout.addWidget(self.summary_table, 1)
+        self._style_summary_table()
+
+    def _style_summary_table(self):
+        colors = self.colors
+        self.summary_table.setStyleSheet(
+            f"QTableWidget {{ background-color:{colors['card']}; border:none; border-radius:16px;"
+            f" gridline-color:{colors['border']}; }}"
+            f"QHeaderView::section {{ background-color:{colors['card']}; color:{colors['subtext']};"
+            " border:none; padding:6px; }"
         )
-        self.error_label.pack(anchor="w", pady=(4, 0))
-
-        self.warning_banner = ctk.CTkLabel(
-            header,
-            text="현재 발효 중인 특보 없음",
-            font=self.font_body,
-            fg_color=COLOR_OK_BG,
-            text_color=COLOR_OK_TEXT,
-            corner_radius=10,
-            anchor="w",
-            justify="left",
-            wraplength=1000,
-        )
-        self.warning_banner.pack(fill="x", padx=20, pady=(8, 18), ipady=8)
-
-        ctk.CTkLabel(
-            parent, text="지난 실측 2일 + 향후 예보 (가져올 수 있는 최대 기간)", font=self.font_body,
-            text_color=COLOR_SUBTEXT, anchor="w",
-        ).pack(fill="x", pady=(0, 6))
-
-        self.forecast_frame = ctk.CTkScrollableFrame(parent, fg_color=COLOR_CARD, corner_radius=16)
-        self.forecast_frame.pack(fill="both", expand=True)
 
     # ---------- view mode ----------
-    def _toggle_view_mode(self):
-        if self.view_mode == "detail":
-            self.view_mode = "summary"
-            self.detail_frame.pack_forget()
-            self.summary_container.pack(fill="both", expand=True)
-            self.view_toggle_btn.configure(text="지역별 상세 보기")
+    def _sync_view_mode_widgets(self):
+        """self.view_mode에 맞춰 스택 페이지와 토글 버튼 문구를 맞춘다.
+        _build_layout()은 항상 상세보기 페이지로 스택을 초기화하므로,
+        팔레트가 바뀌어 _rebuild_ui()가 레이아웃을 통째로 다시 만든 뒤에도
+        이걸 호출해 이전 view_mode(종합보기 등)를 복원해야 한다."""
+        if self.view_mode == "summary":
+            self.stack.setCurrentWidget(self.summary_page)
+            self.view_toggle_btn.setText("지역별 상세 보기")
         else:
-            self.view_mode = "detail"
-            self.summary_container.pack_forget()
-            self.detail_frame.pack(fill="both", expand=True)
-            self.view_toggle_btn.configure(text="즐겨찾기 종합 보기")
+            self.stack.setCurrentWidget(self.detail_page)
+            self.view_toggle_btn.setText("즐겨찾기 종합 보기")
+
+    def _toggle_view_mode(self):
+        self.view_mode = "summary" if self.view_mode == "detail" else "detail"
+        self._sync_view_mode_widgets()
         self._refresh_current_view()
 
     def _on_summary_date_selected(self, date_label):
@@ -938,13 +1220,13 @@ class WeatherDutyApp(ctk.CTk):
 
     # ---------- dialogs ----------
     def _open_region_manager(self):
-        RegionManagerDialog(self, self._on_favorite_changed)
+        RegionManagerDialog(self, self._on_favorite_changed).exec()
 
     def _open_branch_manager(self):
-        BranchManagerDialog(self, self._refresh_current_view)
+        BranchManagerDialog(self, self._refresh_current_view).exec()
 
     def _open_settings(self):
-        SettingsDialog(self, self.refresh_all)
+        SettingsDialog(self, self.refresh_all).exec()
 
     def _on_favorite_changed(self, added=None, removed=None):
         favorites = config.get_favorites()
@@ -964,13 +1246,13 @@ class WeatherDutyApp(ctk.CTk):
     def refresh_all(self):
         service_key = config.get_service_key()
         if not service_key:
-            self.status_label.configure(text="서비스키 미설정 - '설정'에서 입력하세요")
+            self.status_label.setText("서비스키 미설정 - '설정'에서 입력하세요")
             self.reports = {}
             self._refresh_current_view()
             return
 
         favorites = config.get_favorites()
-        self.status_label.configure(text="조회 중...")
+        self.status_label.setText("조회 중...")
         self._fetch_seq += 1
         seq = self._fetch_seq
         for name in favorites:
@@ -998,12 +1280,12 @@ class WeatherDutyApp(ctk.CTk):
                 report["errors"].append(f"특보 조회 실패: {warnings_error}")
             reports[name] = report
 
-        self.after(0, self._apply_fetch_result, seq, reports, favorites)
+        self._bridge.all_done.emit(seq, reports, favorites)
 
     def _apply_fetch_result(self, seq, reports, favorites):
         if seq != self._fetch_seq:
             return  # 새 새로고침이 이미 시작돼 이 결과는 낡은 것 -> 버린다
-        self.status_label.configure(text="갱신 완료")
+        self.status_label.setText("갱신 완료")
         self.reports.update(reports)
         if favorites and (self.selected_region not in self.reports):
             self.selected_region = favorites[0]
@@ -1019,7 +1301,7 @@ class WeatherDutyApp(ctk.CTk):
         except Exception:  # noqa: BLE001
             warnings = []
         report = kma_client.build_region_report(service_key, name, info, warnings)
-        self.after(0, self._merge_one_report, name, report)
+        self._bridge.one_done.emit(name, report)
 
     def _merge_one_report(self, name, report):
         self.reports[name] = report
@@ -1027,52 +1309,52 @@ class WeatherDutyApp(ctk.CTk):
 
     # ---------- rendering: sidebar ----------
     def _render_favorite_buttons(self, favorites):
-        for widget in self.favorites_frame.winfo_children():
-            widget.destroy()
+        colors = self.colors
+        _clear_layout(self.favorites_layout)
         self.favorite_buttons = {}
 
         if not favorites:
-            ctk.CTkLabel(
-                self.favorites_frame,
-                text="즐겨찾기가 비어 있습니다.\n'즐겨찾기 편집'에서 추가하세요.",
-                font=self.font_small,
-                text_color=COLOR_SUBTEXT,
-                justify="left",
-            ).pack(anchor="w", padx=8, pady=8)
+            label = QLabel("즐겨찾기가 비어 있습니다.\n'즐겨찾기 편집'에서 추가하세요.", self.favorites_frame)
+            label.setFont(self.font_small)
+            label.setStyleSheet(qss(color=colors["subtext"]))
+            self.favorites_layout.addWidget(label)
             return
 
         for name in favorites:
             is_selected = name == self.selected_region
             is_loading = name not in self.reports
-            btn = ctk.CTkButton(
-                self.favorites_frame,
-                text=("조회 중…  " + name) if is_loading else name,
-                anchor="w",
-                fg_color=COLOR_ACCENT if is_selected else "transparent",
-                text_color=("#FFFFFF" if is_selected else COLOR_TEXT[0], "#FFFFFF" if is_selected else COLOR_TEXT[1]),
-                hover_color=COLOR_CARD_HOVER,
-                font=self.font_body,
-                corner_radius=10,
-                command=lambda n=name: self._select_region(n),
+            btn = QPushButton(("조회 중…  " + name) if is_loading else name, self.favorites_frame)
+            btn.setFont(self.font_body)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(
+                button_qss(
+                    colors,
+                    bg=(colors["accent"] if is_selected else "transparent"),
+                    color=(colors["on_accent"] if is_selected else colors["text"]),
+                    hover_bg=(colors["accent"] if is_selected else colors["card_hover"]),
+                    pad="8px 12px",
+                )
             )
-            btn.pack(fill="x", padx=8, pady=3)
+            btn.setProperty("_align", "left")
+            btn.setStyleSheet(btn.styleSheet() + "QPushButton { text-align: left; }")
+            btn.clicked.connect(lambda _c=False, n=name: self._select_region(n))
+            self.favorites_layout.addWidget(btn)
             self.favorite_buttons[name] = btn
 
     def _select_region(self, name):
         self.selected_region = name
         if self.view_mode != "detail":
             self.view_mode = "detail"
-            self.summary_container.pack_forget()
-            self.detail_frame.pack(fill="both", expand=True)
-            self.view_toggle_btn.configure(text="즐겨찾기 종합 보기")
+            self._sync_view_mode_widgets()
         self._refresh_current_view()
 
     # ---------- rendering: detail view ----------
     def _render_region(self, name):
+        colors = self.colors
         report = self.reports.get(name)
         if not report:
-            self.region_name_label.configure(text=name)
-            self.temp_label.configure(text="조회 중…")
+            self.region_name_label.setText(name)
+            self.temp_label.setText("조회 중…")
             return
 
         current = report.get("current") or {}
@@ -1080,105 +1362,114 @@ class WeatherDutyApp(ctk.CTk):
         rain = current.get("rain_1h")
         obs_time = current.get("obs_time", "-")
 
-        self.region_name_label.configure(text=name)
-        self.temp_label.configure(text=(f"{temp}℃" if temp is not None else "-℃"))
-        self.rain_label.configure(text=f"1시간 강수량 {rain if rain is not None else '-'}mm")
-        self.obs_time_label.configure(text=f"관측시각 {obs_time}")
+        self.region_name_label.setText(name)
+        self.temp_label.setText(f"{temp}℃" if temp is not None else "-℃")
+        self.rain_label.setText(f"1시간 강수량 {rain if rain is not None else '-'}mm")
+        self.obs_time_label.setText(f"관측시각 {obs_time}")
 
         errors = report.get("errors") or []
-        self.error_label.configure(text="\n".join(errors))
+        self.error_label.setText("\n".join(errors))
 
         warnings = report.get("warnings") or []
         if warnings:
-            self.warning_banner.configure(
-                text="⚠ 특보 발효 중: " + " | ".join(warnings),
-                fg_color=COLOR_WARN_BG,
-                text_color=COLOR_WARN_TEXT,
+            self.warning_banner.setText("⚠ 특보 발효 중: " + " | ".join(warnings))
+            self.warning_banner.setStyleSheet(
+                qss(color=colors["warn_text"], bg=colors["warn_bg"], radius=10, pad="10px")
             )
         else:
-            self.warning_banner.configure(
-                text="현재 발효 중인 특보 없음  (당일 기준, 향후 예정일은 표시되지 않음)",
-                fg_color=COLOR_OK_BG,
-                text_color=COLOR_OK_TEXT,
+            self.warning_banner.setText("현재 발효 중인 특보 없음  (당일 기준, 향후 예정일은 표시되지 않음)")
+            self.warning_banner.setStyleSheet(
+                qss(color=colors["ok_text"], bg=colors["ok_bg"], radius=10, pad="10px")
             )
 
         self._render_forecast(name, report.get("forecast", []))
 
     def _render_forecast(self, region_name, days):
-        for widget in self.forecast_frame.winfo_children():
-            widget.destroy()
+        colors = self.colors
+        _clear_layout(self.forecast_layout)
 
         if not days:
-            ctk.CTkLabel(
-                self.forecast_frame, text="예보 데이터가 없습니다.", font=self.font_body, text_color=COLOR_SUBTEXT
-            ).pack(pady=20)
+            label = QLabel("예보 데이터가 없습니다.", self.forecast_scroll.widget())
+            label.setFont(self.font_body)
+            label.setStyleSheet(qss(color=colors["subtext"]))
+            self.forecast_layout.addWidget(label)
             return
 
+        parent_widget = self.forecast_scroll.widget()
         for day in days:
-            row = ctk.CTkFrame(self.forecast_frame, fg_color="transparent", cursor="hand2")
-            row.pack(fill="x", padx=16, pady=8)
-            row_widgets = [row]
+            row = ClickableFrame(parent_widget)
+            row.setCursor(Qt.CursorShape.PointingHandCursor)
+            row.setStyleSheet("QFrame { background: transparent; }")
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(4, 6, 4, 6)
 
             date_str = day.get("date") or ""
             pretty_date = f"{date_str[4:6]}/{date_str[6:8]}" if len(date_str) == 8 else date_str
 
-            row_widgets.append(
-                ctk.CTkLabel(row, text=pretty_date, font=self.font_body, text_color=COLOR_TEXT, width=60, anchor="w")
-            )
-            row_widgets.append(
-                ctk.CTkLabel(
-                    row, text=day.get("condition") or "-", font=self.font_body, text_color=COLOR_SUBTEXT, width=130,
-                    anchor="w",
-                )
-            )
+            date_label = QLabel(pretty_date, row)
+            date_label.setFont(self.font_body)
+            date_label.setStyleSheet(qss(color=colors["text"]))
+            date_label.setMinimumWidth(60)
+            row_layout.addWidget(date_label)
+
+            condition_label = QLabel(day.get("condition") or "-", row)
+            condition_label.setFont(self.font_body)
+            condition_label.setStyleSheet(qss(color=colors["subtext"]))
+            condition_label.setMinimumWidth(130)
+            row_layout.addWidget(condition_label)
 
             pop = day.get("pop")
             pop_text = f"강수확률 {pop}%" if pop is not None else "강수확률 -"
-            row_widgets.append(
-                ctk.CTkLabel(row, text=pop_text, font=self.font_small, text_color=_pop_color(pop), width=90, anchor="w")
-            )
+            pop_label = QLabel(pop_text, row)
+            pop_label.setFont(self.font_small)
+            pop_label.setStyleSheet(qss(color=theme.pop_color(pop, colors)))
+            pop_label.setMinimumWidth(90)
+            row_layout.addWidget(pop_label)
 
-            row_widgets.append(
-                ctk.CTkLabel(
-                    row, text=f"강수량 {_pcp_display_text(day)}", font=self.font_small, text_color=COLOR_SUBTEXT,
-                    width=170, anchor="w",
-                )
-            )
+            pcp_label = QLabel(f"강수량 {_pcp_display_text(day)}", row)
+            pcp_label.setFont(self.font_small)
+            pcp_label.setStyleSheet(qss(color=colors["subtext"]))
+            pcp_label.setMinimumWidth(190)
+            row_layout.addWidget(pcp_label)
+
+            fl_min, fl_max = day.get("feels_like_min"), day.get("feels_like_max")
+            if fl_min is not None:
+                feels_label = QLabel(f"체감 {fl_min}° / {fl_max}°", row)
+                feels_label.setFont(self.font_small)
+                feels_label.setStyleSheet(qss(color=colors["accent"]))
+                row_layout.addWidget(feels_label)
+
+            row_layout.addStretch(1)
+
+            source_label = QLabel(day.get("source") or "", row)
+            source_label.setFont(self.font_small)
+            source_label.setStyleSheet(qss(color=colors["subtext"]))
+            source_label.setMinimumWidth(70)
+            source_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            row_layout.addWidget(source_label)
 
             tmin, tmax = day.get("tmin"), day.get("tmax")
             temp_text = f"{tmin}° / {tmax}°" if (tmin or tmax) else "-"
-            fl_min, fl_max = day.get("feels_like_min"), day.get("feels_like_max")
-            feels_text = f"체감 {fl_min}° / {fl_max}°" if fl_min is not None else ""
+            temp_label = QLabel(temp_text, row)
+            temp_label.setFont(self.font_body)
+            temp_label.setStyleSheet(qss(color=colors["text"]))
+            temp_label.setMinimumWidth(110)
+            temp_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            row_layout.addWidget(temp_label)
 
-            for widget in row_widgets[1:]:
-                widget.pack(side="left")
-            if feels_text:
-                row_widgets.append(
-                    ctk.CTkLabel(row, text=feels_text, font=self.font_small, text_color=COLOR_ACCENT, anchor="w")
-                )
-                row_widgets[-1].pack(side="left", padx=(8, 0))
+            row.doubleClicked.connect(lambda n=region_name, d=day: self._open_hourly_detail(n, d))
+            self.forecast_layout.addWidget(row)
 
-            source_label = ctk.CTkLabel(
-                row, text=day.get("source") or "", font=self.font_small, text_color=COLOR_SUBTEXT, width=70,
-                anchor="e",
-            )
-            source_label.pack(side="right", padx=(0, 8))
-            row_widgets.append(source_label)
-
-            temp_label = ctk.CTkLabel(row, text=temp_text, font=self.font_body, text_color=COLOR_TEXT, width=110, anchor="e")
-            temp_label.pack(side="right")
-            row_widgets.append(temp_label)
-
-            for widget in row_widgets:
-                widget.bind("<Double-Button-1>", lambda _e, d=day: self._open_hourly_detail(region_name, d))
-
-            ctk.CTkFrame(self.forecast_frame, fg_color=COLOR_BORDER, height=1).pack(fill="x", padx=16)
+            separator = QFrame(parent_widget)
+            separator.setFixedHeight(1)
+            separator.setStyleSheet(f"background-color:{colors['border']};")
+            self.forecast_layout.addWidget(separator)
 
     def _open_hourly_detail(self, region_name, day):
-        HourlyDetailDialog(self, region_name, day)
+        HourlyDetailDialog(self, region_name, day).exec()
 
     def _open_branch_range(self, branch_name, members):
-        BranchRangeDialog(self, branch_name, members, self.reports)
+        BranchRangeDialog(self, branch_name, members, self.reports).exec()
 
     # ---------- rendering: summary view (지사별로 묶어 날짜 하나를 골라 비교) ----------
     def _all_summary_dates(self, favorites):
@@ -1197,6 +1488,8 @@ class WeatherDutyApp(ctk.CTk):
         return all_dates
 
     def _update_summary_date_selector(self, all_dates):
+        import datetime
+
         labels = []
         self._label_to_date = {}
         for date_str in all_dates:
@@ -1205,10 +1498,10 @@ class WeatherDutyApp(ctk.CTk):
             self._label_to_date[pretty] = date_str
 
         if not labels:
-            self.summary_date_selector.configure(values=[])
+            self.summary_date_selector.set_values([])
             return
 
-        self.summary_date_selector.configure(values=labels)
+        self.summary_date_selector.set_values(labels)
         if self.selected_summary_date not in all_dates:
             # 지난 실측 날짜가 목록 맨 앞에 추가되므로, 처음 열 때는 과거 날짜가 아니라
             # 오늘(또는 오늘이 없으면 가장 빠른 미래 날짜)을 기본으로 보여준다.
@@ -1216,26 +1509,30 @@ class WeatherDutyApp(ctk.CTk):
             default_date = next((d for d in all_dates if d >= today_str), all_dates[0])
             self.selected_summary_date = default_date
         selected_label = next(lbl for lbl, d in self._label_to_date.items() if d == self.selected_summary_date)
-        self.summary_date_selector.set(selected_label)
+        self.summary_date_selector.set_current(selected_label)
 
     def _render_summary(self, favorites):
-        for widget in self.summary_frame.winfo_children():
-            widget.destroy()
+        colors = self.colors
+        table = self.summary_table
+        table.setRowCount(0)
+        self._summary_row_days = {}
+        self._summary_branch_rows = {}
 
         if not favorites:
-            ctk.CTkLabel(
-                self.summary_frame, text="즐겨찾기가 비어 있습니다.", font=self.font_body, text_color=COLOR_SUBTEXT
-            ).grid(row=0, column=0, padx=16, pady=20)
+            table.setRowCount(1)
+            item = QTableWidgetItem("즐겨찾기가 비어 있습니다.")
+            item.setForeground(_qcolor(colors["subtext"]))
+            table.setItem(0, 1, item)
             return
 
         all_dates = self._all_summary_dates(favorites)
         self._update_summary_date_selector(all_dates)
 
         if not all_dates:
-            ctk.CTkLabel(
-                self.summary_frame, text="예보 데이터를 불러오는 중입니다…", font=self.font_body,
-                text_color=COLOR_SUBTEXT,
-            ).grid(row=0, column=0, padx=16, pady=20)
+            table.setRowCount(1)
+            item = QTableWidgetItem("예보 데이터를 불러오는 중입니다…")
+            item.setForeground(_qcolor(colors["subtext"]))
+            table.setItem(0, 1, item)
             return
 
         target_date = self.selected_summary_date
@@ -1252,27 +1549,10 @@ class WeatherDutyApp(ctk.CTk):
         if unassigned:
             groups.append(("미분류", unassigned))
 
-        branch_col_w, name_col_w, temp_col_w, feels_col_w, pop_col_w, pcp_col_w, warn_col_w = (
-            100, 180, 90, 100, 80, 120, 55,
-        )
-        headers = [
-            ("지사", branch_col_w, "w"), ("지역", name_col_w, "w"), ("최저/최고", temp_col_w, "center"),
-            ("체감 최저/최고", feels_col_w, "center"), ("강수확률", pop_col_w, "center"),
-            ("강수량(00~24시 누적)", pcp_col_w, "center"), ("특보", warn_col_w, "center"),
-        ]
-        ctk.CTkLabel(
-            self.summary_frame,
-            text="※ 지사명을 클릭하면 원하는 날짜·시간대의 누적강수량을 관할 지역별로 비교할 수 있습니다.",
-            font=self.font_small, text_color=COLOR_SUBTEXT, anchor="w",
-        ).grid(row=0, column=0, columnspan=len(headers), padx=16, pady=(12, 0), sticky="w")
-        for col, (label, width, anchor) in enumerate(headers):
-            ctk.CTkLabel(
-                self.summary_frame, text=label, font=self.font_body, text_color=COLOR_SUBTEXT, width=width,
-                anchor=anchor,
-            ).grid(row=1, column=col, padx=(16 if col == 0 else 4, 16 if col == len(headers) - 1 else 4),
-                   pady=(4, 8), sticky=("w" if anchor == "w" else ""))
+        total_rows = sum(len(members) for _b, members in groups)
+        table.setRowCount(total_rows)
 
-        row_idx = 2
+        row_idx = 0
         for branch_name, members in groups:
             start_row = row_idx
 
@@ -1282,9 +1562,7 @@ class WeatherDutyApp(ctk.CTk):
                 report = self.reports.get(region_name)
                 day = None
                 if report:
-                    day = next(
-                        (d for d in report.get("forecast", []) if d.get("date") == target_date), None
-                    )
+                    day = next((d for d in report.get("forecast", []) if d.get("date") == target_date), None)
                 member_days[region_name] = day
                 if day:
                     amount = _pcp_numeric(day.get("pcp"))
@@ -1297,25 +1575,17 @@ class WeatherDutyApp(ctk.CTk):
                 day = member_days[region_name]
                 is_loading = report is None
                 is_best = region_name == best_name and best_amount > 0
+                row_bg = colors["warn_bg"] if is_best else colors["card"]
+                emph_color = colors["warn_text"] if is_best else colors["text"]
 
-                row_bg = COLOR_WARN_BG if is_best else "transparent"
-                emph_color = COLOR_WARN_TEXT if is_best else COLOR_TEXT
-                row_cells = []
+                self._summary_row_days[row_idx] = (region_name, day)
 
                 name_text = ("조회 중… " + region_name) if is_loading else region_name
-                row_cells.append(ctk.CTkLabel(
-                    self.summary_frame, text=name_text, font=self.font_body, text_color=emph_color,
-                    width=name_col_w, anchor="w", fg_color=row_bg, corner_radius=6, cursor=("hand2" if day else "arrow"),
-                ))
-                row_cells[-1].grid(row=row_idx, column=1, padx=4, pady=3, sticky="ew", ipady=3)
+                self._set_summary_item(table, row_idx, 1, name_text, emph_color, row_bg, self.font_body)
 
                 tmin, tmax = (day.get("tmin"), day.get("tmax")) if day else (None, None)
                 temp_text = f"{tmin}°/{tmax}°" if (tmin is not None or tmax is not None) else "-"
-                row_cells.append(ctk.CTkLabel(
-                    self.summary_frame, text=temp_text, font=self.font_small, text_color=COLOR_TEXT,
-                    width=temp_col_w, fg_color=row_bg, corner_radius=6, cursor=("hand2" if day else "arrow"),
-                ))
-                row_cells[-1].grid(row=row_idx, column=2, padx=4, pady=3, ipady=3)
+                self._set_summary_item(table, row_idx, 2, temp_text, colors["text"], row_bg, self.font_small)
 
                 fl_min, fl_max = (day.get("feels_like_min"), day.get("feels_like_max")) if day else (None, None)
                 if fl_min is not None:
@@ -1324,19 +1594,13 @@ class WeatherDutyApp(ctk.CTk):
                     feels_text = "중기예보만"
                 else:
                     feels_text = "-"
-                row_cells.append(ctk.CTkLabel(
-                    self.summary_frame, text=feels_text, font=self.font_small, text_color=COLOR_ACCENT,
-                    width=feels_col_w, fg_color=row_bg, corner_radius=6, cursor=("hand2" if day else "arrow"),
-                ))
-                row_cells[-1].grid(row=row_idx, column=3, padx=4, pady=3, ipady=3)
+                self._set_summary_item(table, row_idx, 3, feels_text, colors["accent"], row_bg, self.font_small)
 
                 pop = day.get("pop") if day else None
                 pop_text = f"{pop}%" if pop is not None else "-"
-                row_cells.append(ctk.CTkLabel(
-                    self.summary_frame, text=pop_text, font=self.font_small, text_color=_pop_color(pop),
-                    width=pop_col_w, fg_color=row_bg, corner_radius=6, cursor=("hand2" if day else "arrow"),
-                ))
-                row_cells[-1].grid(row=row_idx, column=4, padx=4, pady=3, ipady=3)
+                self._set_summary_item(
+                    table, row_idx, 4, pop_text, theme.pop_color(pop, colors), row_bg, self.font_small
+                )
 
                 if day is None:
                     pcp_text = "-"
@@ -1346,41 +1610,61 @@ class WeatherDutyApp(ctk.CTk):
                     pcp_text = "중기예보만"
                 else:
                     pcp_text = "강수없음"
-                row_cells.append(ctk.CTkLabel(
-                    self.summary_frame, text=pcp_text,
-                    font=ctk.CTkFont(family=self.font_body.cget("family"), size=13, weight=("bold" if is_best else "normal")),
-                    text_color=emph_color, width=pcp_col_w, fg_color=row_bg,
-                    corner_radius=6, cursor=("hand2" if day else "arrow"),
-                ))
-                row_cells[-1].grid(row=row_idx, column=5, padx=4, pady=3, ipady=3)
+                pcp_font = QFont(self.font_body)
+                pcp_font.setBold(is_best)
+                self._set_summary_item(table, row_idx, 5, pcp_text, emph_color, row_bg, pcp_font)
 
                 warn_text = "⚠" if (report and report.get("warnings")) else ""
-                row_cells.append(ctk.CTkLabel(
-                    self.summary_frame, text=warn_text, font=self.font_small, text_color=COLOR_WARN_TEXT,
-                    width=warn_col_w, fg_color=row_bg, corner_radius=6, cursor=("hand2" if day else "arrow"),
-                ))
-                row_cells[-1].grid(row=row_idx, column=6, padx=(4, 16), pady=3, ipady=3)
+                self._set_summary_item(table, row_idx, 6, warn_text, colors["warn_text"], row_bg, self.font_small)
 
-                if day:
-                    for cell in row_cells:
-                        cell.bind(
-                            "<Double-Button-1>", lambda _e, n=region_name, d=day: self._open_hourly_detail(n, d)
-                        )
+                self._set_summary_item(table, row_idx, 0, "", colors["text"], colors["bg"], self.font_body)
 
                 row_idx += 1
 
-            branch_label = ctk.CTkLabel(
-                self.summary_frame, text=branch_name, font=self.font_body, text_color=COLOR_TEXT,
-                width=branch_col_w, fg_color=COLOR_BG, corner_radius=8, cursor="hand2",
-            )
-            branch_label.grid(
-                row=start_row, column=0, rowspan=(row_idx - start_row), padx=(16, 4), pady=3, sticky="ns", ipady=6
-            )
-            branch_label.bind(
-                "<Button-1>", lambda _e, b=branch_name, m=list(members): self._open_branch_range(b, m)
-            )
+            branch_item = QTableWidgetItem(branch_name)
+            branch_item.setForeground(_qcolor(colors["text"]))
+            branch_item.setBackground(_qcolor(colors["bg"]))
+            branch_item.setFont(self.font_body)
+            branch_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(start_row, 0, branch_item)
+            if row_idx - start_row > 1:
+                table.setSpan(start_row, 0, row_idx - start_row, 1)
+            for r in range(start_row, row_idx):
+                self._summary_branch_rows[r] = (branch_name, list(members))
+
+        table.resizeColumnsToContents()
+
+    @staticmethod
+    def _set_summary_item(table, row, col, text, color_hex, bg_hex, font):
+        item = QTableWidgetItem(text)
+        item.setForeground(_qcolor(color_hex))
+        item.setBackground(_qcolor(bg_hex))
+        item.setFont(font)
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter if col != 1 else Qt.AlignmentFlag.AlignVCenter)
+        table.setItem(row, col, item)
+
+    def _on_summary_cell_double_clicked(self, row, _col):
+        entry = getattr(self, "_summary_row_days", {}).get(row)
+        if not entry:
+            return
+        region_name, day = entry
+        if day:
+            self._open_hourly_detail(region_name, day)
+
+    def _on_summary_cell_clicked(self, row, col):
+        if col != 0:
+            return
+        entry = getattr(self, "_summary_branch_rows", {}).get(row)
+        if not entry:
+            return
+        branch_name, members = entry
+        self._open_branch_range(branch_name, members)
 
 
 def main():
-    app = WeatherDutyApp()
-    app.mainloop()
+    app = QApplication.instance() or QApplication([])
+    theme.load_bundled_fonts()
+    app.setFont(theme.font(13, QFont.Weight.Normal))
+    window = WeatherDutyApp()
+    window.show()
+    app.exec()
