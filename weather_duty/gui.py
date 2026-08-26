@@ -1535,6 +1535,10 @@ class WeatherDutyApp(QMainWindow):
                 self._summary_branch_rows[r] = (branch_name, list(members))
 
         table.resizeColumnsToContents()
+        # 지사 열은 대부분 행이 span으로 합쳐져 실제 텍스트가 있는 행이 거의 없다보니
+        # resizeColumnsToContents()가 내용을 제대로 못 읽고 너무 좁게(글자가 "..."로
+        # 잘릴 정도로) 잡는 경우가 있어, 지사명이 넉넉히 들어갈 고정 너비로 보정한다.
+        table.setColumnWidth(0, 90)
 
     @staticmethod
     def _set_summary_item(table, row, col, text, color_hex, bg_hex, font):
