@@ -1,8 +1,9 @@
 # weather-duty
 
 폭염·풍수해·제설 근무를 위한 지역별 날씨 모니터. 서버 없이 로컬에서 실행하는
-데스크톱 프로그램(파이썬 + PySide6/Qt)으로, 기상청(공공데이터포털) API를
-직접 호출한다. 화면은 애플 시스템 색상/폰트(Pretendard 번들)에 맞춘 라이트·다크
+데스크톱 프로그램(파이썬 + PySide6/Qt + [PySide6-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets))으로,
+기상청(공공데이터포털) API를 직접 호출한다. 화면은 애플 시스템 설정의 "그래파이트"
+(무채색) 손잡이색을 참고한 블랙 앤 화이트 톤에, Pretendard 번들 폰트로 라이트·다크
 모드를 지원한다.
 
 ## 기능
@@ -46,6 +47,15 @@
 있도록 [Pretendard](https://github.com/orioncactus/pretendard)(OFL 라이선스)를
 `weather_duty/assets/fonts/`에 번들로 포함했다. 라이선스 전문은 같은 폴더의
 `LICENSE.txt`에 있다.
+
+## 라이선스 안내
+
+카드/세그먼트 컨트롤/토스트 알림 등 위젯 디자인에 쓰는 `PySide6-Fluent-Widgets`
+(qfluentwidgets) 패키지는 **GPLv3** 라이선스다. PySide6 자체는 LGPL로 상용
+재배포도 자유롭지만, qfluentwidgets가 들어간 이상 이 프로그램을 제3자에게
+실행파일(exe) 형태로 배포할 경우 GPLv3 조건(요청 시 소스코드 제공 등)이 적용된다.
+같은 기관 내부 업무용으로만 쓴다면 실무상 문제될 일은 거의 없지만, 외부 배포를
+고려한다면 참고하자.
 
 ## 필요한 공공데이터포털 API (인증키 신청 필요)
 

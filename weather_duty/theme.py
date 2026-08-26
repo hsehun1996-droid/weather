@@ -1,34 +1,52 @@
-"""애플 시스템 색상에 맞춘 라이트/다크 팔레트와 Pretendard 폰트 로딩.
+"""애플 시스템 색상(그레이스케일 "Graphite" 악센트)에 맞춘 라이트/다크 팔레트.
 
-customtkinter 시절 gui.py 맨 위에 있던 COLOR_* 튜플들을 Qt용으로 옮긴 것이다.
-Qt는 위젯이 (light, dark) 튜플을 알아서 못 바꿔주므로, 테마가 바뀌면
-호출부에서 다시 그려야 한다(ThemeManager.changed 시그널 참고).
+라이트/다크 자동 전환과 강조색 파생은 qfluentwidgets(PySide6-Fluent-Widgets)가
+맡고, 이 모듈은 qfluentwidgets가 다루지 않는 의미색(경고/정상/위험도, 버튼
+텍스트색 등)만 우리 앱 전용으로 추가 정의한다. 강조색 자체도 파란색이 아니라
+macOS 시스템 설정의 "그래파이트"(무채색) 손잡이색과 같은 중성 회색을 쓴다 -
+채도가 있는 색보다 흑백톤 요청에 더 맞고, 순수 검정처럼 다크 모드 배경에
+묻히지도 않는다.
 """
 import os
 
-from PySide6.QtCore import QObject, Signal
-from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication
+from PySide6.QtGui import QFont, QFontDatabase
+from qfluentwidgets import Theme, isDarkTheme, qconfig, setTheme, setThemeColor
 
 _ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
 _FONTS_DIR = os.path.join(_ASSETS_DIR, "fonts")
 
+GRAPHITE_ACCENT = "#8E8E93"
+
 LIGHT = dict(
     bg="#F2F2F7", card="#FFFFFF", card_hover="#E9E9EE", text="#1C1C1E",
-    subtext="#6E6E73", accent="#007AFF", warn_bg="#FFEBEA", warn_text="#FF3B30",
-    ok_bg="#EAF7ED", ok_text="#34A853", border="#D1D1D6",
-    risk_high="#D70015", risk_mid="#C77700", on_accent="#FFFFFF",
-    shadow="#00000022",
+    subtext="#6E6E73", accent="#1C1C1E", warn_bg="#FFEBEA", warn_text="#D70015",
+    ok_bg="#EAF7ED", ok_text="#1D7A34", border="#D1D1D6",
+    risk_high="#D70015", risk_mid="#B25000", on_accent="#FFFFFF",
 )
 DARK = dict(
-    bg="#1C1C1E", card="#2C2C2E", card_hover="#3A3A3C", text="#F5F5F7",
-    subtext="#98989D", accent="#0A84FF", warn_bg="#3A1F1E", warn_text="#FF453A",
-    ok_bg="#1F3324", ok_text="#30D158", border="#3A3A3C",
-    risk_high="#FF453A", risk_mid="#FF9F0A", on_accent="#FFFFFF",
-    shadow="#00000055",
+    bg="#000000", card="#1C1C1E", card_hover="#2C2C2E", text="#F5F5F7",
+    subtext="#98989D", accent="#E5E5EA", warn_bg="#3A1F1E", warn_text="#FF6961",
+    ok_bg="#1F3324", ok_text="#30D158", border="#38383A",
+    risk_high="#FF6961", risk_mid="#FFB340", on_accent="#000000",
 )
 
 FONT_FAMILY = "Pretendard"
 _FALLBACK_FAMILIES = ["Malgun Gothic", "Apple SD Gothic Neo", "Segoe UI", "sans-serif"]
+
+
+def init_app_theme():
+    """qfluentwidgets 전역 테마를 설정한다. 앱 시작 시 한 번만 호출."""
+    setTheme(Theme.AUTO)
+    setThemeColor(GRAPHITE_ACCENT)
+
+
+def colors():
+    return DARK if isDarkTheme() else LIGHT
+
+
+def on_theme_changed(slot):
+    """라이트/다크 전환(OS 설정 변경 포함)을 감지해 slot()을 호출하도록 등록."""
+    qconfig.themeChanged.connect(lambda _theme: slot())
 
 
 def load_bundled_fonts():
@@ -55,48 +73,12 @@ def font(size, weight=QFont.Weight.Normal):
     return f
 
 
-def pop_color(pop, colors):
+def pop_color(pop, c):
     """강수확률에 따른 강조 색(적당히 높으면 경고색으로)."""
     if pop is None:
-        return colors["subtext"]
+        return c["subtext"]
     if pop >= 70:
-        return colors["risk_high"]
+        return c["risk_high"]
     if pop >= 50:
-        return colors["risk_mid"]
-    return colors["accent"]
-
-
-class ThemeManager(QObject):
-    """OS 라이트/다크 모드 변경을 감지해서 팔레트를 바꿔주는 얇은 래퍼.
-    Qt 6.5+ 에서만 자동 감지가 되고, 그 이전 버전에서는 라이트로 고정된다."""
-
-    changed = Signal()
-
-    def __init__(self):
-        super().__init__()
-        self._dark = self._detect_dark()
-        style_hints = QGuiApplication.styleHints()
-        if hasattr(style_hints, "colorSchemeChanged"):
-            style_hints.colorSchemeChanged.connect(self._on_scheme_changed)
-
-    @staticmethod
-    def _detect_dark():
-        style_hints = QGuiApplication.styleHints()
-        color_scheme = getattr(style_hints, "colorScheme", None)
-        if color_scheme is None:
-            return False
-        try:
-            from PySide6.QtCore import Qt
-            return color_scheme() == Qt.ColorScheme.Dark
-        except Exception:  # noqa: BLE001
-            return False
-
-    def _on_scheme_changed(self, _scheme):
-        is_dark = self._detect_dark()
-        if is_dark != self._dark:
-            self._dark = is_dark
-            self.changed.emit()
-
-    @property
-    def colors(self):
-        return DARK if self._dark else LIGHT
+        return c["risk_mid"]
+    return c["text"]
