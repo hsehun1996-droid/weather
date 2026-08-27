@@ -37,6 +37,21 @@ def _pcp_numeric(pcp_str):
     return float(match.group(1)) if match else 0.0
 
 
+def _pcp_peak_hour_text(day):
+    """시간별 데이터 중 강수량이 가장 많은 시각을 "(14시 최대)" 형태로 반환.
+    강수가 없거나(전부 0) 시간별 데이터가 없으면 빈 문자열."""
+    hourly = (day or {}).get("hourly") or []
+    best_time, best_amount = None, 0.0
+    for h in hourly:
+        amount = _pcp_numeric(h.get("pcp"))
+        if amount > best_amount:
+            best_amount = amount
+            best_time = h.get("time")
+    if not best_time:
+        return ""
+    return f"({_format_fcst_time(best_time)} 최대)"
+
+
 def _pcp_display_text(day):
     """강수량 칸에 보여줄 문구.
     - 단기예보(강수량 데이터 있음): "3mm" 같은 실제 값 또는 "강수없음"
@@ -1177,19 +1192,29 @@ class WeatherDutyApp(QMainWindow):
 
     def _fetch_all(self, service_key, favorites, seq):
         all_regions = regions.all_regions()
-        try:
-            warnings = kma_client.get_active_warnings(service_key)
-            warnings_error = None
-        except Exception as exc:  # noqa: BLE001
-            warnings = []
-            warnings_error = str(exc)
+        # getWthrWrnMsg는 stnId가 지방기상청 관할 코드라, 즐겨찾기가 걸쳐 있는
+        # 관할 구역마다 따로 조회해야 한다(하나로 퉁치면 다른 지방청 관할 지역의
+        # 특보가 누락됨) - 같은 관할을 공유하는 지역끼리는 조회 결과를 재사용한다.
+        needed_stn_ids = {
+            all_regions[name]["warn_stn_id"] for name in favorites
+            if name in all_regions and all_regions[name].get("warn_stn_id")
+        }
+        warnings_by_zone = {}
+        warnings_error = None
+        for stn_id in needed_stn_ids:
+            try:
+                warnings_by_zone[stn_id] = kma_client.get_active_warnings(service_key, stn_id)
+            except Exception as exc:  # noqa: BLE001
+                warnings_by_zone[stn_id] = []
+                warnings_error = str(exc)
 
         reports = {}
         for name in favorites:
             info = all_regions.get(name)
             if not info:
                 continue
-            report = kma_client.build_region_report(service_key, name, info, warnings)
+            zone_warnings = warnings_by_zone.get(info.get("warn_stn_id"), [])
+            report = kma_client.build_region_report(service_key, name, info, zone_warnings)
             if warnings_error:
                 report["errors"].append(f"특보 조회 실패: {warnings_error}")
             reports[name] = report
@@ -1211,7 +1236,7 @@ class WeatherDutyApp(QMainWindow):
         if not info:
             return
         try:
-            warnings = kma_client.get_active_warnings(service_key)
+            warnings = kma_client.get_active_warnings(service_key, info.get("warn_stn_id"))
         except Exception:  # noqa: BLE001
             warnings = []
         report = kma_client.build_region_report(service_key, name, info, warnings)
@@ -1507,7 +1532,8 @@ class WeatherDutyApp(QMainWindow):
                 if day is None:
                     pcp_text = "-"
                 elif day.get("pcp"):
-                    pcp_text = day.get("pcp")
+                    peak = _pcp_peak_hour_text(day)
+                    pcp_text = f"{day.get('pcp')}{peak}" if peak else day.get("pcp")
                 elif day.get("source") == "중기예보":
                     pcp_text = "중기예보만"
                 else:

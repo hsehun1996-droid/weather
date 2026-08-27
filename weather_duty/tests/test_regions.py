@@ -23,6 +23,19 @@ class TestAllRegions(unittest.TestCase):
         self.assertEqual(info["mid_land_regid"], "11B00000")
         self.assertEqual(info["warn_keyword"], "종로구")
         self.assertEqual(info["asos_stn_id"], "108")
+        self.assertEqual(info["warn_stn_id"], "109")
+
+    def test_warn_stn_id_matches_jurisdiction_not_asos_station(self):
+        # 경북/대구는 대구지방기상청(143) 관할 - ASOS 관측지점번호(108=서울 등)와는
+        # 다른 코드 체계이므로 헷갈리지 않는지 확인.
+        all_regions = regions.all_regions()
+        self.assertEqual(all_regions["경상북도 상주시"]["warn_stn_id"], "143")
+        self.assertEqual(all_regions["대구광역시 중구"]["warn_stn_id"], "143")
+        self.assertEqual(all_regions["부산광역시 중구"]["warn_stn_id"], "159")
+        self.assertEqual(all_regions["광주광역시 동구"]["warn_stn_id"], "156")
+        self.assertEqual(all_regions["전북특별자치도 전주시 완산구"]["warn_stn_id"], "146")
+        self.assertEqual(all_regions["충청북도 청주시 상당구"]["warn_stn_id"], "131")
+        self.assertEqual(all_regions["제주특별자치도 제주시"]["warn_stn_id"], "184")
 
     def test_gangwon_yeongdong_vs_yeongseo_split(self):
         all_regions = regions.all_regions()
@@ -38,6 +51,7 @@ class TestAllRegions(unittest.TestCase):
             self.assertTrue(info["mid_ta_regid"], name)
             self.assertTrue(info["mid_land_regid"], name)
             self.assertTrue(info["asos_stn_id"], name)
+            self.assertTrue(info["warn_stn_id"], name)
 
 
 class TestAsosStations(unittest.TestCase):

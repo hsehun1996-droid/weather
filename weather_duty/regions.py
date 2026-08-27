@@ -10,8 +10,12 @@
   - 중기육상예보(getMidLandFcst): 훨씬 넓은 10개 권역 단위 코드(mid_land_regid).
     (수도권/강원영서/강원영동/충북/대전세종충남/전북/광주전남/대구경북/
     부산울산경남/제주) 시도명(강원은 영동·영서 구분)으로 결정한다.
-  - 기상특보(getWthrWrnMsg): 구조화된 지역코드가 아니라 자유 텍스트(제목/내용)로
-    내려오므로, 텍스트에 지역명이 포함되는지로 매칭한다 (warn_keyword).
+  - 기상특보(getWthrWrnMsg): stnId가 필수이며, 이 stnId는 관측지점번호가 아니라
+    발표 관서(지방기상청) 단위 코드다 - 한 지방기상청은 자기 관할 구역 특보만
+    내려주므로(예: stnId=156 광주지방기상청 응답에는 광주·전남 특보만 나옴),
+    전국을 보려면 관할 지방청별로 나눠 조회해야 한다(warn_stn_id, 9개 권역).
+    이후 그 관서 관할 안에서 시군구가 실제로 특보에 해당하는지는 자유 텍스트에
+    지역명이 포함되는지로 판단한다(warn_keyword).
   - 지상(종관, ASOS) 시간자료(getWthrDataList, 과거 실측): 관측지점번호(stnId).
     전국 97개 현재 운영 중인 관측소의 위경도(data/asos_stations.csv, 기상자료개방포털에서
     받은 관측지점정보 메타데이터 기준)에서 가장 가까운 지점을 쓴다.
@@ -42,6 +46,24 @@ SIDO_NAMES = [
     "충청북도", "충청남도", "전북특별자치도", "전라남도", "경상북도",
     "경상남도", "제주특별자치도",
 ]
+
+
+_WARN_STN_ID_BY_SIDO = {
+    "서울특별시": "109", "인천광역시": "109", "경기도": "109",
+    "부산광역시": "159", "울산광역시": "159", "경상남도": "159",
+    "대구광역시": "143", "경상북도": "143",
+    "광주광역시": "156", "전라남도": "156",
+    "대전광역시": "133", "세종특별자치시": "133", "충청남도": "133",
+    "충청북도": "131",
+    "강원특별자치도": "105", "강원도": "105",
+    "제주특별자치도": "184", "제주도": "184",
+}
+
+
+def _warn_stn_id(sido_name):
+    if sido_name.startswith("전북") or sido_name == "전라북도":
+        return "146"
+    return _WARN_STN_ID_BY_SIDO.get(sido_name, "109")
 
 
 def _mid_land_regid(sido_name, sigungu_name):
@@ -107,6 +129,7 @@ def build_region_info(lat, lon, sido_name, sigungu_name, midterm_points, asos_st
         "lon": lon,
         "mid_ta_regid": _nearest_mid_ta_regid(lat, lon, midterm_points),
         "mid_land_regid": _mid_land_regid(sido_name, sigungu_name),
+        "warn_stn_id": _warn_stn_id(sido_name),
         "warn_keyword": sigungu_name,
         "asos_stn_id": _nearest_asos_stn_id(lat, lon, asos_stations),
     }

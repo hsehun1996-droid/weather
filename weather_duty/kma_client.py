@@ -8,7 +8,9 @@
      - getMidTa       : 중기기온(3~10일 후 최저/최고기온)
      - getMidLandFcst : 중기육상예보(3~10일 후 하늘상태 텍스트, 강수확률)
   3. 기상특보 조회서비스 - WthrWrnInfoService
-     - getWthrWrnMsg : 현재 발효 중인 특보 목록(자유 텍스트, 당일 기준만 제공)
+     - getWthrWrnMsg : 현재 발효 중인 특보 목록(자유 텍스트, 당일 기준만 제공).
+       stnId는 지방기상청 관할 코드라 지역마다 다른 stnId로 따로 조회해야
+       전국을 빠짐없이 커버한다(regions.py의 warn_stn_id 참고).
   4. 지상(종관, ASOS) 시간자료 조회서비스 - AsosHourlyInfoService
      - getWthrDataList : 과거 실측 시간별 기온/강수량/습도/풍속(예보가 아니라 이미
        관측된 확정값). 시간별 값을 모아 일 단위 최저/최고기온, 00~24시 누적강수량,
@@ -460,18 +462,20 @@ def get_mid_term_forecast(service_key, reg_id_land, reg_id_ta, now=None):
 _WARN_TEXT_FIELDS = ("t1", "t2", "t3", "t4", "t6", "t7", "other", "warFc")
 
 
-def get_active_warnings(service_key, now=None):
+def get_active_warnings(service_key, stn_id, now=None):
     """현재 발효 중인 기상특보 목록(통보문 텍스트)을 반환.
-    getWthrWrnMsg는 stnId(관측지점번호)가 필수이며, 특보구역별로 나뉘지 않고
-    지역명이 포함된 자유 텍스트(t1~t7 등)로 내려오므로, 지역별 매칭은 호출부에서
-    키워드 포함 여부로 판단한다. stnId=108(서울)은 전국 특보를 포괄해서 보여주는
-    대표 지점으로 흔히 쓰인다."""
+    getWthrWrnMsg의 stnId는 관측지점번호가 아니라 발표 관서(지방기상청) 코드다.
+    한 지방기상청은 자기 관할 구역 특보만 내려주므로(예: stnId=156 광주지방기상청
+    응답에는 광주·전남 특보만 나옴), 호출부가 지역에 맞는 stnId를 골라 넘겨야
+    한다(regions.py의 warn_stn_id). 응답은 특보구역별로 나뉘지 않고 지역명이
+    포함된 자유 텍스트(t1~t7 등)로 내려오므로, 그 관서 관할 안에서 시군구 단위
+    매칭은 호출부가 키워드 포함 여부로 판단한다."""
     now = now or datetime.datetime.now()
     today = now.strftime("%Y%m%d")
     items = _get(
         f"{BASE_WARN}/getWthrWrnMsg",
         service_key,
-        {"numOfRows": 100, "pageNo": 1, "stnId": 108, "fromTmFc": today, "toTmFc": today},
+        {"numOfRows": 100, "pageNo": 1, "stnId": stn_id, "fromTmFc": today, "toTmFc": today},
     )
     warnings = []
     for it in items:
