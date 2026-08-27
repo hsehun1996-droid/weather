@@ -178,6 +178,21 @@ class TestWarningMatch(unittest.TestCase):
         self.assertEqual(matched_none, [])
 
 
+class TestGetActiveWarnings(unittest.TestCase):
+    @patch("weather_duty.kma_client._SESSION.get")
+    def test_passes_through_given_stn_id(self, mock_get):
+        # stnId는 지방기상청 관할 코드라 지역마다 달라야 한다(전국 고정값 없음) -
+        # 호출부가 넘긴 stn_id가 실제 요청 URL에 그대로 실리는지 확인.
+        mock_get.return_value = _mock_response([{"t6": "폭염주의보 경상북도 상주시 발효"}])
+        result = kma_client.get_active_warnings(
+            "dummy-key", "143", now=datetime.datetime(2026, 8, 27, 15, 0)
+        )
+        called_url = mock_get.call_args[0][0]
+        self.assertIn("stnId=143", called_url)
+        self.assertEqual(len(result), 1)
+        self.assertIn("상주시", result[0]["text"])
+
+
 class TestErrorHandling(unittest.TestCase):
     @patch("weather_duty.kma_client._SESSION.get")
     def test_error_result_code_raises(self, mock_get):
