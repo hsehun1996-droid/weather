@@ -11,8 +11,11 @@
 위젯이므로 테마 변경 구독은 `theme.bind_theme_change()`(위젯 파괴 시 자동
 연결 해제)로 건다.
 """
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QFontMetrics
+from PySide6.QtWidgets import (
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget,
+)
 
 from qfluentwidgets import TransparentToolButton
 
@@ -245,7 +248,12 @@ class EmptyState(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(theme.SPACE_8, theme.SPACE_8, theme.SPACE_8, theme.SPACE_8)
         layout.setSpacing(theme.SPACE_2)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # 주의: 여기서 layout.setAlignment(Qt.AlignmentFlag.AlignCenter)를 쓰면 안 된다.
+        # 이 PySide6/Pretendard 조합에서, 정렬이 걸린 QVBoxLayout 안에 줄바꿈되는
+        # QLabel이 있으면 그 줄바꿈된 텍스트가 뒤집혀서(상하좌우 반전) 그려지는
+        # 렌더링 버그가 실제로 재현된다(오프스크린·실제 xcb 렌더링 모두 동일).
+        # 대신 앞뒤로 stretch를 넣어 수직 가운데 정렬 효과만 얻는다.
+        layout.addStretch(1)
 
         self._title_label = QLabel(title, self)
         self._title_label.setFont(theme.font_role("card_title"))
@@ -259,6 +267,8 @@ class EmptyState(QWidget):
             self._desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._desc_label.setWordWrap(True)
             layout.addWidget(self._desc_label)
+
+        layout.addStretch(1)
 
         self._refresh_style()
         theme.bind_theme_change(self, self._refresh_style)
@@ -285,3 +295,112 @@ class IconActionButton(TransparentToolButton):
         self.setIconSize(QSize(theme.ICON_SIZE_DEFAULT, theme.ICON_SIZE_DEFAULT))
         if tooltip:
             self.setToolTip(tooltip)
+
+
+class ForecastRow(QFrame):
+    """일자별 예보 한 줄(지역별 상세보기). 순수 표시 컴포넌트 - 호출부(gui.py)가
+    이미 계산/포맷을 끝낸 문자열과 톤 이름만 `set_data()`로 넘겨받아 배치할
+    뿐, API 호출이나 수치 계산·재해석은 하지 않는다.
+
+    정보 배치(넓은 화면 기준): [날짜/요일] [날씨 상태] [강수확률] [강수량]
+    [체감] [출처 배지] [최저/최고] [chevron]. QGridLayout + stretch factor로
+    배치해 넓은 화면에서 늘어나고 좁은 화면에서도 주요 수치가 겹치지 않게 한다."""
+
+    doubleClicked = Signal()
+
+    _COL_DATE, _COL_CONDITION, _COL_POP, _COL_PCP, _COL_FEELS, _COL_SOURCE, _COL_TEMP, _COL_CHEVRON = range(8)
+
+    # 강수량 배지는 "중기예보(강수량 미제공)"처럼 유독 긴 문구가 나올 수 있어,
+    # 이 칸만 최대 폭을 두고 넘치면 말줄임(...) + 툴팁으로 전체 문구를 보여준다
+    # (8칸짜리 좁은 행에서 이 배지 하나 때문에 960px에서도 잘리는 걸 막기 위함).
+    _PCP_BADGE_MAX_WIDTH = 108
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(theme.FORECAST_ROW_HEIGHT)
+
+        grid = QGridLayout(self)
+        grid.setContentsMargins(theme.SPACE_3, 0, theme.SPACE_3, 0)
+        grid.setHorizontalSpacing(theme.SPACE_2)
+
+        self._date_label = QLabel(self)
+        self._date_label.setFont(theme.font_role("caption"))
+        grid.addWidget(self._date_label, 0, self._COL_DATE)
+
+        self._condition_label = QLabel(self)
+        self._condition_label.setFont(theme.font_role("body"))
+        grid.addWidget(self._condition_label, 0, self._COL_CONDITION)
+
+        self._pop_badge = TagBadge("", tone="neutral", parent=self)
+        grid.addWidget(self._pop_badge, 0, self._COL_POP, Qt.AlignmentFlag.AlignVCenter)
+
+        self._pcp_badge = TagBadge("", tone="neutral", parent=self)
+        self._pcp_badge.setMaximumWidth(self._PCP_BADGE_MAX_WIDTH)
+        grid.addWidget(self._pcp_badge, 0, self._COL_PCP, Qt.AlignmentFlag.AlignVCenter)
+
+        self._feels_label = QLabel(self)
+        self._feels_label.setFont(theme.font_role("caption"))
+        grid.addWidget(self._feels_label, 0, self._COL_FEELS)
+
+        self._source_badge = TagBadge("", tone="neutral", parent=self)
+        self._source_badge.setFixedHeight(theme.SPACE_6 - theme.SPACE_1)  # 22~24px
+        grid.addWidget(self._source_badge, 0, self._COL_SOURCE, Qt.AlignmentFlag.AlignVCenter)
+
+        self._temp_label = QLabel(self)
+        self._temp_label.setFont(theme.font_role("label"))
+        self._temp_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(self._temp_label, 0, self._COL_TEMP)
+
+        self._chevron_label = QLabel("›", self)
+        self._chevron_label.setFont(theme.font_role("card_title"))
+        self._chevron_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        grid.addWidget(self._chevron_label, 0, self._COL_CHEVRON)
+
+        # 날씨 상태(condition) 칸만 남는 공간을 가져가고, 나머지는 내용 크기만큼만
+        # 차지한다 - 고정 폭을 여러 칸에 걸어두는 대신 이 칸 하나에만 stretch를 준다.
+        grid.setColumnStretch(self._COL_CONDITION, 1)
+
+        self._refresh_style()
+        theme.bind_theme_change(self, self._refresh_style)
+
+    def set_data(
+        self, *, date_text, condition_text, pop_text, pop_tone, pcp_text,
+        feels_text, source_text, source_tone, temp_text, tooltip,
+    ):
+        """이미 계산된 표시 문자열만 받는다 - 여기서 숫자를 새로 계산하지 않는다."""
+        self._date_label.setText(date_text)
+        self._condition_label.setText(condition_text)
+        self._pop_badge.set_text_and_tone(pop_text, pop_tone)
+        # 뱃지 폭(패딩 포함)에 맞춰 필요할 때만 말줄임 - 원본 문구는 툴팁으로 유지.
+        available = self._PCP_BADGE_MAX_WIDTH - theme.SPACE_2 * 2 - theme.SPACE_1
+        elided_pcp = QFontMetrics(self._pcp_badge.font()).elidedText(
+            pcp_text, Qt.TextElideMode.ElideRight, max(available, 0)
+        )
+        self._pcp_badge.set_text_and_tone(elided_pcp, "neutral")
+        self._pcp_badge.setToolTip(pcp_text)
+        self._feels_label.setText(feels_text)
+        self._feels_label.setVisible(bool(feels_text))
+        self._source_badge.set_text_and_tone(source_text, source_tone)
+        self._temp_label.setText(temp_text)
+        self.setToolTip(tooltip)
+
+    def mouseDoubleClickEvent(self, event):  # noqa: N802 - Qt override
+        self.doubleClicked.emit()
+        super().mouseDoubleClickEvent(event)
+
+    def _refresh_style(self):
+        c = theme.colors()
+        self.setStyleSheet(
+            f"ForecastRow {{ background-color:transparent; border-radius:{theme.RADIUS_CONTROL}px; }}"
+            f"ForecastRow:hover {{ background-color:{c['surface_hover']}; }}"
+        )
+        for label, color_key in (
+            (self._date_label, "text_primary"),
+            (self._condition_label, "text_secondary"),
+            (self._feels_label, "text_primary"),
+            (self._temp_label, "text_primary"),
+            (self._chevron_label, "text_tertiary"),
+        ):
+            label.setStyleSheet(f"color:{c[color_key]}; background:transparent;")

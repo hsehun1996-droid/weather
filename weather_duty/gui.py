@@ -6,13 +6,14 @@
 (https://github.com/zhiyiYo/PyQt-Fluent-Widgets)의 카드/세그먼트 컨트롤/토스트
 알림 등을 그대로 가져다 쓴다.
 """
+import datetime
 import re
 import threading
 
 from PySide6.QtCore import Qt, QObject, QSize, QTimer, Signal
 from PySide6.QtGui import QFont, QFontMetrics, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QWidget, QMainWindow, QFrame, QLabel, QVBoxLayout, QHBoxLayout,
+    QWidget, QMainWindow, QFrame, QLabel, QSizePolicy, QVBoxLayout, QHBoxLayout,
     QDialog, QMessageBox, QInputDialog, QSplitter, QStackedWidget, QTableWidgetItem,
     QAbstractItemView, QAbstractScrollArea, QListWidgetItem,
 )
@@ -74,6 +75,42 @@ def _format_fcst_time(time_str):
     return time_str or "-"
 
 
+_WEEKDAY_KO = ["월", "화", "수", "목", "금", "토", "일"]
+
+
+def _pretty_date_with_weekday(date_str, today_str=None):
+    """YYYYMMDD 날짜 값을 "오늘 · 08/28 (금)" / "08/29 (토)" 형태로 표시만
+    바꾼다 - 날짜 값 자체(day["date"])는 건드리지 않고 UI에서만 요일을 계산."""
+    if not date_str or len(date_str) != 8:
+        return date_str or "-"
+    try:
+        d = datetime.date(int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8]))
+    except ValueError:
+        return f"{date_str[4:6]}/{date_str[6:8]}"
+    pretty = f"{date_str[4:6]}/{date_str[6:8]} ({_WEEKDAY_KO[d.weekday()]})"
+    return f"오늘 · {pretty}" if today_str and date_str == today_str else pretty
+
+
+def _pop_tone(pop):
+    """강수확률 배지 톤. theme.pop_color()가 이미 쓰는 것과 같은 기준(70/50)을
+    TagBadge 톤 이름으로 옮긴 것뿐 - 새 기준을 만들지 않는다."""
+    if pop is None:
+        return "neutral"
+    if pop >= 70:
+        return "danger"
+    if pop >= 50:
+        return "warning"
+    return "neutral"
+
+
+def _forecast_row_tooltip(day):
+    """실제 시간별 데이터가 있는 행에서만 "시간별"이라고 명시한다 - 중기예보처럼
+    시간별 데이터가 없는 행에 오해를 주는 문구를 달지 않기 위함."""
+    if day.get("hourly"):
+        return "더블클릭하여 시간별 상세보기"
+    return "더블클릭하여 상세 정보 보기"
+
+
 def qss(color=None, bg=None, radius=None, pad=None, border=None, weight=None):
     decls = []
     if color:
@@ -132,19 +169,6 @@ def _status_pill_min_width():
     metrics = QFontMetrics(theme.font_role("micro"))
     widest = max(metrics.horizontalAdvance(label) for label in _STATUS_PILL_LABELS)
     return widest + theme.SPACE_3 * 2 + theme.SPACE_3
-
-
-class ClickableFrame(QFrame):
-    doubleClicked = Signal()
-    clicked = Signal()
-
-    def mouseDoubleClickEvent(self, event):  # noqa: N802 - Qt override
-        self.doubleClicked.emit()
-        super().mouseDoubleClickEvent(event)
-
-    def mousePressEvent(self, event):  # noqa: N802 - Qt override
-        self.clicked.emit()
-        super().mousePressEvent(event)
 
 
 def _bring_to_front(win):
@@ -1148,67 +1172,157 @@ class WeatherDutyApp(QMainWindow):
         self.stack.setCurrentWidget(self.detail_page)
 
     def _build_detail_widgets(self, parent):
+        """지역별 상세 화면: 현재 날씨 Hero surface -> 오류/특보 상태 배너 ->
+        "일별 예보" 섹션 헤더 -> 예보 행 목록(ForecastRow) 순서로 쌓는다."""
         c = theme.colors()
         layout = QVBoxLayout(parent)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(theme.SPACE_4)
 
-        header = make_card(parent, c, radius=16)
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(20, 18, 20, 18)
-        layout.addWidget(header)
+        # ---------- Hero surface ----------
+        hero = QFrame(parent)
+        hero.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        hero.setStyleSheet(
+            f"QFrame {{ background-color:{c['surface']}; border:1px solid {c['border_subtle']};"
+            f" border-radius:{theme.RADIUS_CARD}px; }}"
+        )
+        hero_layout = QVBoxLayout(hero)
+        hero_layout.setContentsMargins(
+            theme.CARD_PADDING, theme.CARD_PADDING, theme.CARD_PADDING, theme.CARD_PADDING
+        )
+        hero_layout.setSpacing(theme.SPACE_5)
+        layout.addWidget(hero)
 
+        # 상단: 지역명(왼쪽, 길면 줄바꿈 + 전체 이름 tooltip) / 관측시각 배지(오른쪽)
         top_row = QHBoxLayout()
-        self.region_name_label = QLabel("즐겨찾기 지역을 선택하세요", header)
-        self.region_name_label.setFont(self.font_title)
-        self.region_name_label.setStyleSheet(qss(color=c["text"]))
-        top_row.addWidget(self.region_name_label)
-        top_row.addStretch(1)
-        self.obs_time_label = QLabel("", header)
-        self.obs_time_label.setFont(self.font_small)
-        self.obs_time_label.setStyleSheet(qss(color=c["subtext"]))
-        top_row.addWidget(self.obs_time_label)
-        header_layout.addLayout(top_row)
+        top_row.setSpacing(theme.SPACE_3)
+        self.region_name_label = QLabel("즐겨찾기 지역을 선택하세요", hero)
+        self.region_name_label.setFont(theme.font_role("page_title"))
+        self.region_name_label.setWordWrap(True)
+        self.region_name_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent;")
+        self.region_name_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        top_row.addWidget(self.region_name_label, 1)
 
-        current_row = QHBoxLayout()
-        self.temp_label = QLabel("-℃", header)
-        self.temp_label.setFont(self.font_display)
-        self.temp_label.setStyleSheet(qss(color=c["text"]))
-        current_row.addWidget(self.temp_label)
+        self.obs_time_label = QLabel("", hero)
+        self.obs_time_label.setFont(theme.font_role("micro"))
+        self.obs_time_label.setStyleSheet(
+            f"color:{c['text_secondary']}; background-color:{c['surface_alt']};"
+            f" border-radius:{theme.RADIUS_SMALL}px; padding:{theme.SPACE_1}px {theme.SPACE_3}px;"
+        )
+        top_row.addWidget(self.obs_time_label, 0, Qt.AlignmentFlag.AlignTop)
+        hero_layout.addLayout(top_row)
 
-        detail_col = QVBoxLayout()
-        self.rain_label = QLabel("1시간 강수량 -mm", header)
-        self.rain_label.setFont(self.font_body)
-        self.rain_label.setStyleSheet(qss(color=c["subtext"]))
-        detail_col.addWidget(self.rain_label)
-        self.error_label = QLabel("", header)
-        self.error_label.setFont(self.font_small)
-        self.error_label.setStyleSheet(qss(color=c["warn_text"]))
+        # 중앙: 현재 기온(왼쪽, 큰 지표) / 1시간 강수(오른쪽, 소형 지표)
+        metrics_row = QHBoxLayout()
+        metrics_row.setSpacing(theme.SPACE_8)
+
+        temp_col = QVBoxLayout()
+        temp_col.setSpacing(theme.SPACE_1)
+        temp_caption = QLabel("현재 기온", hero)
+        temp_caption.setFont(theme.font_role("caption"))
+        temp_caption.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
+        temp_col.addWidget(temp_caption)
+        self.temp_label = QLabel("-℃", hero)
+        self.temp_label.setFont(theme.font_role("metric_display"))
+        self.temp_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent;")
+        temp_col.addWidget(self.temp_label)
+        metrics_row.addLayout(temp_col)
+
+        rain_col = QVBoxLayout()
+        rain_col.setSpacing(theme.SPACE_1)
+        rain_caption = QLabel("1시간 강수", hero)
+        rain_caption.setFont(theme.font_role("caption"))
+        rain_caption.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
+        rain_col.addWidget(rain_caption)
+        self.rain_label = QLabel("-mm", hero)
+        self.rain_label.setFont(theme.font(22, QFont.Weight.DemiBold))
+        self.rain_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent;")
+        rain_col.addWidget(self.rain_label)
+        metrics_row.addLayout(rain_col)
+
+        metrics_row.addStretch(1)
+        hero_layout.addLayout(metrics_row)
+
+        # 오류 배너(danger, 오류 없으면 숨김) - 톤이 항상 danger로 고정이라 구성 시
+        # 한 번만 스타일을 입히고, 보일지 말지만 _render_region()에서 토글한다.
+        self._error_banner_frame = QFrame(hero)
+        self._error_banner_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._error_banner_frame.setStyleSheet(
+            f"QFrame {{ background-color:{c['danger_soft']}; border-radius:{theme.RADIUS_PANEL}px; }}"
+        )
+        error_banner_layout = QVBoxLayout(self._error_banner_frame)
+        error_banner_layout.setContentsMargins(
+            theme.SPACE_4, theme.SPACE_3, theme.SPACE_4, theme.SPACE_3
+        )
+        error_banner_layout.setSpacing(theme.SPACE_1)
+        error_title = QLabel("⚠ 데이터 조회 오류", self._error_banner_frame)
+        error_title.setFont(theme.font_role("label"))
+        error_title.setStyleSheet(f"color:{c['danger']}; background:transparent;")
+        error_banner_layout.addWidget(error_title)
+        self.error_label = QLabel("", self._error_banner_frame)
+        self.error_label.setFont(theme.font_role("caption"))
         self.error_label.setWordWrap(True)
-        detail_col.addWidget(self.error_label)
-        current_row.addLayout(detail_col)
-        current_row.addStretch(1)
-        header_layout.addLayout(current_row)
+        self.error_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
+        error_banner_layout.addWidget(self.error_label)
+        hero_layout.addWidget(self._error_banner_frame)
+        self._error_banner_frame.setVisible(False)
 
-        self.warning_banner = QLabel("현재 발효 중인 특보 없음", header)
-        self.warning_banner.setFont(self.font_body)
+        # 특보 배너 - 특보 없음(평상시)은 눈에 띄지 않는 중립 톤 + 작은 상태 점만,
+        # 특보 있음일 때만 danger 톤으로 강하게 표시한다(_style_warning_banner).
+        self._warning_banner_frame = QFrame(hero)
+        self._warning_banner_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        warning_layout = QHBoxLayout(self._warning_banner_frame)
+        warning_layout.setContentsMargins(
+            theme.SPACE_4, theme.SPACE_3, theme.SPACE_4, theme.SPACE_3
+        )
+        warning_layout.setSpacing(theme.SPACE_3)
+        self._warning_dot = QLabel(self._warning_banner_frame)
+        self._warning_dot.setFixedSize(8, 8)
+        warning_layout.addWidget(self._warning_dot, 0, Qt.AlignmentFlag.AlignTop)
+        self.warning_banner = QLabel("현재 발효 중인 특보가 없습니다.", self._warning_banner_frame)
+        self.warning_banner.setFont(theme.font_role("body"))
         self.warning_banner.setWordWrap(True)
-        self.warning_banner.setStyleSheet(qss(color=c["ok_text"], bg=c["ok_bg"], radius=10, pad="10px"))
-        header_layout.addWidget(self.warning_banner)
+        warning_layout.addWidget(self.warning_banner, 1)
+        hero_layout.addWidget(self._warning_banner_frame)
+        self._style_warning_banner(has_warning=False)
 
-        sub_hdr = QLabel("지난 실측 2일 + 향후 예보 (가져올 수 있는 최대 기간)", parent)
-        sub_hdr.setFont(self.font_body)
-        sub_hdr.setStyleSheet(qss(color=c["subtext"]))
-        layout.addWidget(sub_hdr)
+        # ---------- 일별 예보 ----------
+        forecast_header = uic.SectionHeader(
+            "일별 예보",
+            subtitle="지난 실측 2일 + 향후 예보 (가져올 수 있는 최대 기간)",
+            parent=parent,
+        )
+        layout.addWidget(forecast_header)
 
         self.forecast_scroll = ScrollArea(parent)
         self.forecast_scroll.setWidgetResizable(True)
-        forecast_card = make_card(parent, c, radius=16)
+        forecast_card = QFrame(parent)
+        forecast_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        forecast_card.setStyleSheet(
+            f"QFrame {{ background-color:{c['surface']}; border:1px solid {c['border_subtle']};"
+            f" border-radius:{theme.RADIUS_CARD}px; }}"
+        )
         self.forecast_layout = QVBoxLayout(forecast_card)
+        self.forecast_layout.setContentsMargins(0, theme.SPACE_2, 0, theme.SPACE_2)
+        self.forecast_layout.setSpacing(0)
         self.forecast_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.forecast_scroll.setWidget(forecast_card)
-        self.forecast_scroll.setStyleSheet("QScrollArea { border: none; }")
+        self.forecast_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
         layout.addWidget(self.forecast_scroll, 1)
+
+    def _style_warning_banner(self, has_warning):
+        """특보 배너 톤 갱신. 특보가 있을 때만 danger로 강하게, 없으면 중립
+        surface_alt + 작은 success 점으로 조용하게(초록을 과하게 쓰지 않음)."""
+        c = theme.colors()
+        if has_warning:
+            bg, dot, text = c["danger_soft"], c["danger"], c["danger"]
+        else:
+            bg, dot, text = c["surface_alt"], c["success"], c["text_secondary"]
+        self._warning_banner_frame.setStyleSheet(
+            f"QFrame {{ background-color:{bg}; border-radius:{theme.RADIUS_PANEL}px; }}"
+        )
+        self._warning_dot.setStyleSheet(f"background-color:{dot}; border-radius:4px;")
+        self.warning_banner.setStyleSheet(f"color:{text}; background:transparent;")
 
     def _build_summary_widgets(self, parent):
         c = theme.colors()
@@ -1429,10 +1543,10 @@ class WeatherDutyApp(QMainWindow):
 
     # ---------- rendering: detail view ----------
     def _render_region(self, name):
-        c = theme.colors()
         report = self.reports.get(name)
         if not report:
             self.region_name_label.setText(name)
+            self.region_name_label.setToolTip(name)
             self.temp_label.setText("조회 중…")
             return
 
@@ -1442,106 +1556,65 @@ class WeatherDutyApp(QMainWindow):
         obs_time = current.get("obs_time", "-")
 
         self.region_name_label.setText(name)
+        self.region_name_label.setToolTip(name)
         self.temp_label.setText(f"{temp}℃" if temp is not None else "-℃")
-        self.rain_label.setText(f"1시간 강수량 {rain if rain is not None else '-'}mm")
-        self.obs_time_label.setText(f"관측시각 {obs_time}")
+        self.rain_label.setText(f"{rain}mm" if rain is not None else "-mm")
+        self.obs_time_label.setText(f"관측 {obs_time}")
 
         errors = report.get("errors") or []
         self.error_label.setText("\n".join(errors))
+        self._error_banner_frame.setVisible(bool(errors))
 
         warnings = report.get("warnings") or []
         if warnings:
-            self.warning_banner.setText("⚠ 특보 발효 중: " + " | ".join(warnings))
-            self.warning_banner.setStyleSheet(
-                qss(color=c["warn_text"], bg=c["warn_bg"], radius=10, pad="10px")
-            )
+            self.warning_banner.setText("\n".join(warnings))
         else:
-            self.warning_banner.setText("현재 발효 중인 특보 없음  (당일 기준, 향후 예정일은 표시되지 않음)")
-            self.warning_banner.setStyleSheet(
-                qss(color=c["ok_text"], bg=c["ok_bg"], radius=10, pad="10px")
-            )
+            self.warning_banner.setText("현재 발효 중인 특보가 없습니다.  (당일 기준, 향후 예정일은 표시되지 않음)")
+        self._style_warning_banner(has_warning=bool(warnings))
 
         self._render_forecast(name, report.get("forecast", []))
 
     def _render_forecast(self, region_name, days):
-        c = theme.colors()
         _clear_layout(self.forecast_layout)
+        parent_widget = self.forecast_scroll.widget()
 
         if not days:
-            label = QLabel("예보 데이터가 없습니다.", self.forecast_scroll.widget())
-            label.setFont(self.font_body)
-            label.setStyleSheet(qss(color=c["subtext"]))
-            self.forecast_layout.addWidget(label)
+            empty = uic.EmptyState(
+                "표시할 예보 데이터가 없습니다.",
+                "새로고침 버튼을 눌러 다시 시도해 보세요.",
+                parent_widget,
+            )
+            self.forecast_layout.addWidget(empty)
             return
 
-        parent_widget = self.forecast_scroll.widget()
+        c = theme.colors()
+        today_str = datetime.date.today().strftime("%Y%m%d")
         for day in days:
-            row = ClickableFrame(parent_widget)
-            row.setCursor(Qt.CursorShape.PointingHandCursor)
-            row.setStyleSheet("QFrame { background: transparent; }")
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(4, 6, 4, 6)
-
-            date_str = day.get("date") or ""
-            pretty_date = f"{date_str[4:6]}/{date_str[6:8]}" if len(date_str) == 8 else date_str
-
-            date_label = QLabel(pretty_date, row)
-            date_label.setFont(self.font_body)
-            date_label.setStyleSheet(qss(color=c["text"]))
-            date_label.setMinimumWidth(60)
-            row_layout.addWidget(date_label)
-
-            condition_label = QLabel(day.get("condition") or "-", row)
-            condition_label.setFont(self.font_body)
-            condition_label.setStyleSheet(qss(color=c["subtext"]))
-            condition_label.setMinimumWidth(130)
-            row_layout.addWidget(condition_label)
+            row = uic.ForecastRow(parent_widget)
 
             pop = day.get("pop")
-            pop_text = f"강수확률 {pop}%" if pop is not None else "강수확률 -"
-            pop_label = QLabel(pop_text, row)
-            pop_label.setFont(self.font_small)
-            pop_label.setStyleSheet(qss(color=theme.pop_color(pop, c)))
-            pop_label.setMinimumWidth(90)
-            row_layout.addWidget(pop_label)
-
-            pcp_label = QLabel(f"강수량 {_pcp_display_text(day)}", row)
-            pcp_label.setFont(self.font_small)
-            pcp_label.setStyleSheet(qss(color=c["subtext"]))
-            pcp_label.setMinimumWidth(190)
-            row_layout.addWidget(pcp_label)
-
             fl_min, fl_max = day.get("feels_like_min"), day.get("feels_like_max")
-            if fl_min is not None:
-                feels_label = QLabel(f"체감 {fl_min}° / {fl_max}°", row)
-                feels_label.setFont(self.font_small)
-                feels_label.setStyleSheet(qss(color=c["text"]))
-                row_layout.addWidget(feels_label)
-
-            row_layout.addStretch(1)
-
-            source_label = QLabel(day.get("source") or "", row)
-            source_label.setFont(self.font_small)
-            source_label.setStyleSheet(qss(color=c["subtext"]))
-            source_label.setMinimumWidth(70)
-            source_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            row_layout.addWidget(source_label)
-
             tmin, tmax = day.get("tmin"), day.get("tmax")
             temp_text = f"{tmin}° / {tmax}°" if (tmin or tmax) else "-"
-            temp_label = QLabel(temp_text, row)
-            temp_label.setFont(self.font_body)
-            temp_label.setStyleSheet(qss(color=c["text"]))
-            temp_label.setMinimumWidth(110)
-            temp_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            row_layout.addWidget(temp_label)
 
+            row.set_data(
+                date_text=_pretty_date_with_weekday(day.get("date") or "", today_str),
+                condition_text=day.get("condition") or "-",
+                pop_text=(f"강수 {pop}%" if pop is not None else "강수 -"),
+                pop_tone=_pop_tone(pop),
+                pcp_text=_pcp_display_text(day),
+                feels_text=(f"체감 {fl_min}° / {fl_max}°" if fl_min is not None else ""),
+                source_text=day.get("source") or "-",
+                source_tone=("info" if day.get("source") == "실측" else "neutral"),
+                temp_text=temp_text,
+                tooltip=_forecast_row_tooltip(day),
+            )
             row.doubleClicked.connect(lambda n=region_name, d=day: self._open_hourly_detail(n, d))
             self.forecast_layout.addWidget(row)
 
             separator = QFrame(parent_widget)
             separator.setFixedHeight(1)
-            separator.setStyleSheet(f"background-color:{c['border']};")
+            separator.setStyleSheet(f"background-color:{c['divider']};")
             self.forecast_layout.addWidget(separator)
 
     def _open_hourly_detail(self, region_name, day):
