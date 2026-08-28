@@ -550,7 +550,9 @@ class RegionManagerDialog(_ThemedDialog):
         self._render_results()
 
     def _open_custom_region_form(self):
-        CustomRegionForm(self, self._render_results)
+        # 이전에는 .exec()/.show()를 부르지 않아 다이얼로그가 생성만 되고
+        # 화면에 뜨지 않는 회귀가 있었다(다른 모든 다이얼로그는 .exec() 사용).
+        CustomRegionForm(self, self._render_results).exec()
 
 
 class CustomRegionForm(_ThemedDialog):
@@ -1508,8 +1510,10 @@ class WeatherDutyApp(QMainWindow):
         body_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         body_container.setStyleSheet(f"background-color:{c['background']};")
         body_layout = QVBoxLayout(body_container)
+        # 헤더 좌우 여백(APP_CONTENT_MARGIN)과 맞춰 제목/사이드바 좌측 끝이
+        # 수직으로 정렬되게 한다(예전에는 SPACE_4=16px라 헤더의 24px와 어긋났음).
         body_layout.setContentsMargins(
-            theme.SPACE_4, theme.SPACE_4, theme.SPACE_4, theme.SPACE_4
+            theme.APP_CONTENT_MARGIN, theme.SPACE_4, theme.APP_CONTENT_MARGIN, theme.APP_CONTENT_MARGIN
         )
         self.root_layout.addWidget(body_container, 1)
 
