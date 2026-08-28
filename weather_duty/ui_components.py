@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from qfluentwidgets import TransparentToolButton
+from qfluentwidgets import IndeterminateProgressRing, TransparentToolButton
 
 from . import theme
 
@@ -208,16 +208,19 @@ class SectionHeader(QWidget):
 
 
 class MetricBlock(QWidget):
-    """현재 기온처럼 화면에서 가장 큰 핵심 수치 하나 + 짧은 캡션을 보여주는 블록."""
+    """핵심 수치 하나 + 짧은 캡션을 보여주는 블록. 기본값(metric_display, 42px)은
+    Hero의 "현재 기온"처럼 화면에서 가장 큰 핵심 수치용이고, 다이얼로그 안의
+    작은 요약 수치 여러 개를 나란히 두는 자리에서는 value_font_role로 더 작은
+    역할(예: "card_title")을 줄 수 있다."""
 
-    def __init__(self, value_text="-", caption_text="", parent=None):
+    def __init__(self, value_text="-", caption_text="", parent=None, value_font_role="metric_display"):
         super().__init__(parent)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(theme.SPACE_1)
         self._value_label = QLabel(value_text, self)
-        self._value_label.setFont(theme.font_role("metric_display"))
+        self._value_label.setFont(theme.font_role(value_font_role))
         layout.addWidget(self._value_label)
         self._caption_label = QLabel(caption_text, self)
         self._caption_label.setFont(theme.font_role("body"))
@@ -240,10 +243,17 @@ class MetricBlock(QWidget):
 
 class EmptyState(QWidget):
     """즐겨찾기 없음/예보 없음/검색 결과 없음처럼 "보여줄 데이터가 없는" 상태를
-    표준화한 안내 위젯. 제목 + 선택적 설명 문구를 가운데 정렬로 보여준다."""
+    표준화한 안내 위젯. 제목 + 선택적 설명 문구를 가운데 정렬로 보여준다.
 
-    def __init__(self, title, description="", parent=None):
+    tone="warning"(서비스키 미설정처럼 조치가 필요한 상태)을 주면 옅은
+    warning_soft 배경을 두르고, action_widget(예: "설정 열기" 버튼)을 주면
+    설명 아래 가운데 정렬로 붙는다 - 기본값(tone="neutral", action_widget=None)일
+    때는 이전과 완전히 동일하게 그려진다(기존 호출부 영향 없음)."""
+
+    def __init__(self, title, description="", parent=None, tone="neutral", action_widget=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._tone = tone
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(theme.SPACE_8, theme.SPACE_8, theme.SPACE_8, theme.SPACE_8)
@@ -258,6 +268,7 @@ class EmptyState(QWidget):
         self._title_label = QLabel(title, self)
         self._title_label.setFont(theme.font_role("card_title"))
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._title_label.setWordWrap(True)
         layout.addWidget(self._title_label)
 
         # description 없이 만들어져도 나중에 set_description()으로 채울 수 있도록
@@ -268,6 +279,14 @@ class EmptyState(QWidget):
         self._desc_label.setWordWrap(True)
         self._desc_label.setVisible(bool(description))
         layout.addWidget(self._desc_label)
+
+        self._action_row = QHBoxLayout()
+        self._action_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._action_row.setContentsMargins(0, theme.SPACE_1, 0, 0)
+        layout.addLayout(self._action_row)
+        self._action_widget = None
+        if action_widget is not None:
+            self.set_action_widget(action_widget)
 
         layout.addStretch(1)
 
@@ -281,10 +300,31 @@ class EmptyState(QWidget):
         self._desc_label.setText(description)
         self._desc_label.setVisible(bool(description))
 
+    def set_tone(self, tone):
+        self._tone = tone
+        self._refresh_style()
+
+    def set_action_widget(self, widget):
+        if self._action_widget is not None:
+            self._action_row.removeWidget(self._action_widget)
+            self._action_widget.setParent(None)
+            self._action_widget.deleteLater()
+        self._action_widget = widget
+        if widget is not None:
+            self._action_row.addWidget(widget)
+
     def _refresh_style(self):
         c = theme.colors()
-        self._title_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
-        self._desc_label.setStyleSheet(f"color:{c['text_tertiary']}; background:transparent;")
+        if self._tone == "warning":
+            self.setStyleSheet(
+                f"EmptyState {{ background-color:{c['warning_soft']}; border-radius:{theme.RADIUS_PANEL}px; }}"
+            )
+            title_color, desc_color = c["text_primary"], c["text_secondary"]
+        else:
+            self.setStyleSheet("EmptyState { background-color:transparent; }")
+            title_color, desc_color = c["text_secondary"], c["text_tertiary"]
+        self._title_label.setStyleSheet(f"color:{title_color}; background:transparent;")
+        self._desc_label.setStyleSheet(f"color:{desc_color}; background:transparent;")
 
 
 class IconActionButton(TransparentToolButton):
@@ -302,6 +342,226 @@ class IconActionButton(TransparentToolButton):
         self.setIconSize(QSize(theme.ICON_SIZE_DEFAULT, theme.ICON_SIZE_DEFAULT))
         if tooltip:
             self.setToolTip(tooltip)
+
+
+class DangerHoverIconButton(TransparentToolButton):
+    """삭제류 아이콘 버튼: 평소엔 text_secondary, 마우스가 올라가 있는 동안만
+    danger 톤으로 바뀐다("삭제 아이콘을 항상 밝은 빨간색으로" 두지 않기 위함).
+    qfluentwidgets FluentIconBase.colored()로 두 가지 고정색 아이콘을 미리
+    만들어 두고 enter/leave에서 맞바꾸는 방식이라 새 애니메이션·패키지가 없다."""
+
+    def __init__(self, icon, tooltip="", parent=None):
+        super().__init__(parent)
+        self._icon = icon
+        self.setFixedSize(theme.CONTROL_HEIGHT_SMALL, theme.CONTROL_HEIGHT_SMALL)
+        self.setIconSize(QSize(theme.ICON_SIZE_DEFAULT, theme.ICON_SIZE_DEFAULT))
+        if tooltip:
+            self.setToolTip(tooltip)
+        self._normal_icon = icon
+        self._danger_icon = icon
+        self._refresh_icons()
+        theme.bind_theme_change(self, self._refresh_icons)
+
+    def _refresh_icons(self):
+        c = theme.colors()
+        self._normal_icon = self._icon.colored(c["text_secondary"], c["text_secondary"])
+        self._danger_icon = self._icon.colored(c["danger"], c["danger"])
+        self.setIcon(self._normal_icon)
+
+    def enterEvent(self, event):  # noqa: N802 - Qt override
+        self.setIcon(self._danger_icon)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):  # noqa: N802 - Qt override
+        self.setIcon(self._normal_icon)
+        super().leaveEvent(event)
+
+
+class LoadingState(QWidget):
+    """"조회 중" 상태를 표준화한 위젯. 반복 pulse/shimmer 같은 무거운 효과 대신
+    qfluentwidgets의 작은 회전 인디케이터(IndeterminateProgressRing) 하나 +
+    문구만 쓴다. EmptyState와 같은 규칙(stretch로 수직 중앙 정렬)을 따른다."""
+
+    def __init__(self, title="기상 정보를 조회하고 있습니다.", parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(theme.SPACE_8, theme.SPACE_8, theme.SPACE_8, theme.SPACE_8)
+        layout.setSpacing(theme.SPACE_3)
+        layout.addStretch(1)
+
+        ring_row = QHBoxLayout()
+        ring_row.addStretch(1)
+        self._ring = IndeterminateProgressRing(self)
+        self._ring.setFixedSize(28, 28)
+        self._ring.setStrokeWidth(3)
+        ring_row.addWidget(self._ring)
+        ring_row.addStretch(1)
+        layout.addLayout(ring_row)
+
+        self._title_label = QLabel(title, self)
+        self._title_label.setFont(theme.font_role("card_title"))
+        self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._title_label.setWordWrap(True)
+        layout.addWidget(self._title_label)
+
+        layout.addStretch(1)
+
+        self._refresh_style()
+        theme.bind_theme_change(self, self._refresh_style)
+
+    def set_title(self, title):
+        self._title_label.setText(title)
+
+    def _refresh_style(self):
+        c = theme.colors()
+        self.setStyleSheet("LoadingState { background-color:transparent; }")
+        self._title_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
+
+
+class DialogHeader(QWidget):
+    """다이얼로그 상단 제목(18~20px DemiBold) + 짧은 설명(caption, text_secondary,
+    4~6px 간격) 표준 헤더. 본문 섹션 소제목(SectionHeader, text_tertiary 부제)과는
+    다이얼로그 전용으로 별도 규격을 쓴다 - 기존 SectionHeader 용법에는 영향 없다."""
+
+    def __init__(self, title, description="", parent=None):
+        super().__init__(parent)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(theme.SPACE_1)  # 4px (spec 허용 범위 4~6px)
+
+        self._title_label = QLabel(title, self)
+        self._title_label.setFont(theme.font_role("section_title"))
+        self._title_label.setWordWrap(True)
+        layout.addWidget(self._title_label)
+
+        self._desc_label = QLabel(description, self)
+        self._desc_label.setFont(theme.font_role("caption"))
+        self._desc_label.setWordWrap(True)
+        self._desc_label.setVisible(bool(description))
+        layout.addWidget(self._desc_label)
+
+        self._refresh_style()
+        theme.bind_theme_change(self, self._refresh_style)
+
+    def set_title(self, title):
+        self._title_label.setText(title)
+
+    def set_description(self, description):
+        self._desc_label.setText(description)
+        self._desc_label.setVisible(bool(description))
+
+    def _refresh_style(self):
+        c = theme.colors()
+        self._title_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent;")
+        self._desc_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
+
+
+class DialogFooter(QWidget):
+    """다이얼로그 하단 버튼 줄 표준 레이아웃: 선택적 상단 divider + 우측 정렬
+    버튼들(8px 간격). 버튼은 호출부(gui.py)가 이미 만들어 콜백까지 연결해
+    넘긴다 - 이 위젯은 배치만 책임진다."""
+
+    def __init__(self, buttons, with_divider=True, parent=None):
+        super().__init__(parent)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(theme.SPACE_3)
+
+        self._divider = None
+        if with_divider:
+            self._divider = QFrame(self)
+            self._divider.setFixedHeight(1)
+            outer.addWidget(self._divider)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(theme.SPACE_2)
+        row.addStretch(1)
+        for btn in buttons:
+            row.addWidget(btn)
+        outer.addLayout(row)
+
+        self._refresh_style()
+        theme.bind_theme_change(self, self._refresh_style)
+
+    def _refresh_style(self):
+        if self._divider is not None:
+            c = theme.colors()
+            self._divider.setStyleSheet(f"background-color:{c['divider']};")
+
+
+class FormField(QWidget):
+    """label + 입력 위젯 + helper/오류 텍스트 한 줄을 표준 규격으로 쌓는다.
+    입력 위젯(LineEdit/ComboBox 등)은 호출부가 만들어 넘긴다 - 검증 규칙과
+    값 처리는 이 위젯이 알지 못하며, 오직 "표시"만 담당한다.
+
+    set_error(message)를 부르면 helper 텍스트 자리가 그 메시지로 바뀌고
+    (기존 helper_text는 오류가 없어지면 clear_error()로 복원), 입력 위젯이
+    qfluentwidgets의 setError()를 지원하면 그것도 함께 켠다 - 필드 높이는
+    항상 label+입력+helper 한 줄 구조라 오류 표시로 레이아웃이 크게 흔들리지
+    않는다."""
+
+    def __init__(self, label_text, input_widget, helper_text="", required=False, parent=None):
+        super().__init__(parent)
+        self._helper_text = helper_text
+        self._is_error = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(theme.SPACE_1)
+
+        label_row = QHBoxLayout()
+        label_row.setContentsMargins(0, 0, 0, 0)
+        label_row.setSpacing(2)
+        self._label = QLabel(label_text, self)
+        self._label.setFont(theme.font_role("label"))
+        label_row.addWidget(self._label)
+        self._required_mark = None
+        if required:
+            self._required_mark = QLabel("*", self)
+            self._required_mark.setFont(theme.font_role("label"))
+            label_row.addWidget(self._required_mark)
+        label_row.addStretch(1)
+        layout.addLayout(label_row)
+
+        self._input_widget = input_widget
+        layout.addWidget(input_widget)
+
+        self._helper_label = QLabel(helper_text, self)
+        self._helper_label.setFont(theme.font_role("caption"))
+        self._helper_label.setWordWrap(True)
+        self._helper_label.setVisible(bool(helper_text))
+        layout.addWidget(self._helper_label)
+
+        self._refresh_style()
+        theme.bind_theme_change(self, self._refresh_style)
+
+    def set_error(self, message):
+        self._is_error = bool(message)
+        if message:
+            self._helper_label.setText(message)
+            self._helper_label.setVisible(True)
+        else:
+            self._helper_label.setText(self._helper_text)
+            self._helper_label.setVisible(bool(self._helper_text))
+        if hasattr(self._input_widget, "setError"):
+            self._input_widget.setError(self._is_error)
+        self._refresh_style()
+
+    def clear_error(self):
+        self.set_error(None)
+
+    def _refresh_style(self):
+        c = theme.colors()
+        self._label.setStyleSheet(f"color:{c['text_primary']}; background:transparent;")
+        if self._required_mark is not None:
+            self._required_mark.setStyleSheet(f"color:{c['danger']}; background:transparent;")
+        helper_color = c["danger"] if self._is_error else c["text_tertiary"]
+        self._helper_label.setStyleSheet(f"color:{helper_color}; background:transparent;")
 
 
 class ForecastRow(QFrame):

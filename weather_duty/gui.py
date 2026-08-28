@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from qfluentwidgets import (
-    PushButton, PrimaryPushButton, TransparentPushButton,
+    PushButton, PrimaryPushButton,
     LineEdit, SearchLineEdit, ComboBox, CheckBox, TableWidget, ListWidget,
     ScrollArea, SingleDirectionScrollArea, CardWidget, SegmentedWidget, InfoBar, InfoBarPosition,
     FluentIcon, SystemThemeListener,
@@ -216,121 +216,170 @@ def _clear_layout(layout):
 # ---------------------------------------------------------------------------
 
 
-class _HorizontalWheelTable(TableWidget):
-    """시간별 표는 세로줄이 몇 개 안 되고 가로(시각)로 길게 늘어서므로,
-    마우스 휠(세로 스크롤 입력)을 가로 스크롤로 돌려준다."""
+class _ThemedDialog(QDialog):
+    """모든 다이얼로그가 공유하는 배경색 처리. 다이얼로그를 열어 둔 채로
+    라이트/다크를 전환하면(_bind_background()를 호출한 경우) 배경이 계속
+    현재 테마를 따라가고, 그러지 않았더라도 새로 여는 다이얼로그는 항상 그
+    시점의 theme.colors()로 배경을 칠하므로 이전 테마 색이 인라인 스타일에
+    남지 않는다. 다이얼로그 내부에서 개별적으로 그리는 표/배지 등은 대부분
+    ui_components.py 위젯(자체적으로 bind_theme_change를 건다)을 쓰므로 함께
+    갱신되고, 직접 그린 QTableWidgetItem 색상처럼 일부만 남을 수 있다."""
 
-    def wheelEvent(self, event):  # noqa: N802 - Qt override
-        delta = event.angleDelta().y() or event.angleDelta().x()
-        bar = self.horizontalScrollBar()
-        bar.setValue(bar.value() - delta)
-        event.accept()
+    def _bind_background(self):
+        self._extra_theme_refresh = []
+        self._refresh_background()
+        theme.bind_theme_change(self, self._refresh_background)
+
+    def _on_theme_refresh(self, callback):
+        """다이얼로그가 열려 있는 동안 테마가 바뀌면 배경과 함께 다시 그릴
+        콜백을 등록한다 - 직접 그린 QFrame 패널/표 헤더 인라인 스타일처럼
+        ui_components 위젯이 아니라서 자동으로 갱신되지 않는 것들을 위한 것."""
+        self._extra_theme_refresh.append(callback)
+
+    def _refresh_background(self):
+        c = theme.colors()
+        self.setStyleSheet(f"QDialog {{ background-color:{c['background']}; }}")
+        for callback in getattr(self, "_extra_theme_refresh", []):
+            callback()
 
 
-class HourlyDetailDialog(QDialog):
+class HourlyDetailDialog(_ThemedDialog):
     """일자별 예보 칸(지역별 상세/종합보기 어느 쪽이든)을 더블클릭하면 그 날의
-    3시간 구간별 날씨/기온/체감온도/강수량/강수확률을 가로로 늘어놓은 표로 보여준다."""
+    3시간 구간별 날씨/기온/체감온도/강수량/강수확률을 시간이 행(row)인 표로
+    보여준다. 데이터 순서·값은 원래 hourly 리스트 그대로이고, 메인 화면
+    표(TABLE_HEADER_HEIGHT/TABLE_ROW_HEIGHT)와 같은 행 높이 토큰을 쓴다."""
 
     def __init__(self, parent, region_name, day):
         super().__init__(parent)
-        c = theme.colors()
         pretty_date = day.get("date", "")
         if len(pretty_date) == 8:
             pretty_date = f"{pretty_date[:4]}-{pretty_date[4:6]}-{pretty_date[6:8]}"
         self.setWindowTitle(f"{region_name} {pretty_date} 시간별 예보")
-        self.setStyleSheet(f"QDialog {{ background-color:{c['bg']}; }}")
+        self._bind_background()
+        self.setMinimumWidth(600)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(8)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(
+            theme.DIALOG_CONTENT_MARGIN, theme.DIALOG_CONTENT_MARGIN,
+            theme.DIALOG_CONTENT_MARGIN, theme.DIALOG_CONTENT_MARGIN,
+        )
+        outer.setSpacing(theme.SPACE_4)
 
-        title = QLabel(f"{region_name}  ·  {pretty_date} 시간별 예보", self)
-        title.setFont(parent.font_title)
-        title.setStyleSheet(qss(color=c["text"]))
-        layout.addWidget(title)
+        outer.addWidget(uic.DialogHeader(region_name, f"{pretty_date} 시간별 예보", self))
 
         hourly = day.get("hourly") or []
-        summary_bits = [f"00~24시 누적 강수량: {_pcp_display_text(day)}"]
-        if day.get("tmin") is not None or day.get("tmax") is not None:
-            summary_bits.append(f"기온 {day.get('tmin', '-')}° / {day.get('tmax', '-')}°")
-        if day.get("feels_like_min") is not None:
-            summary_bits.append(f"체감 {day['feels_like_min']}° / {day['feels_like_max']}°")
 
+        # ---------- 요약 정보(00~24시 누적/기온/체감) - surface_alt 그룹 하나로 ----------
+        summary_bits = [("00~24시 누적 강수량", _pcp_display_text(day))]
+        if day.get("tmin") is not None or day.get("tmax") is not None:
+            summary_bits.append(("기온", f"{day.get('tmin', '-')}° / {day.get('tmax', '-')}°"))
+        if day.get("feels_like_min") is not None:
+            summary_bits.append(("체감", f"{day['feels_like_min']}° / {day['feels_like_max']}°"))
+        summary_frame = QFrame(self)
+        summary_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+        def _restyle_summary_frame():
+            sc = theme.colors()
+            summary_frame.setStyleSheet(
+                f"QFrame {{ background-color:{sc['surface_alt']}; border-radius:{theme.RADIUS_PANEL}px; }}"
+            )
+
+        _restyle_summary_frame()
+        self._on_theme_refresh(_restyle_summary_frame)
+        summary_layout = QHBoxLayout(summary_frame)
+        summary_layout.setContentsMargins(theme.SPACE_4, theme.SPACE_3, theme.SPACE_4, theme.SPACE_3)
+        summary_layout.setSpacing(theme.SPACE_6)
+        for label_text, value_text in summary_bits:
+            block = uic.MetricBlock(value_text, label_text, summary_frame, value_font_role="card_title")
+            summary_layout.addWidget(block)
+        summary_layout.addStretch(1)
+        outer.addWidget(summary_frame)
+
+        # ---------- 시간대별 표(또는 시간별 데이터가 없는 이유 안내) ----------
         if not hourly:
-            card = make_card(self, c)
-            card_layout = QVBoxLayout(card)
             if day.get("source") == "중기예보":
                 reason = "중기예보(4일 이후)는 기상청이 강수확률만 제공하고,\n3시간 단위 시간별 데이터는 제공하지 않습니다."
             elif day.get("source") == "실측":
                 reason = "이 날짜의 시간별 실측 자료를 불러오지 못했습니다."
             else:
                 reason = "시간별 데이터가 없습니다."
-            reason_label = QLabel(reason, card)
-            reason_label.setFont(parent.font_small)
-            reason_label.setStyleSheet(qss(color=c["subtext"]))
-            card_layout.addSpacing(24)
-            card_layout.addWidget(reason_label)
-            summary_label = QLabel("   |   ".join(summary_bits), card)
-            summary_label.setFont(parent.font_body)
-            summary_label.setStyleSheet(qss(color=c["text"]))
-            card_layout.addWidget(summary_label)
-            card_layout.addSpacing(24)
-            layout.addWidget(card, 1)
-            self.resize(400, 260)
+            empty = uic.EmptyState("시간별 데이터가 없습니다", reason, self)
+            empty.setMinimumHeight(160)
+            outer.addWidget(empty, 1)
         else:
-            row_defs = [("날씨", "condition"), ("기온", "temp"), ("체감온도", "feels_like"), ("강수량", "pcp"), ("강수확률", "pop")]
-            label_col_w, hour_col_w = 112, 92
-            table = _HorizontalWheelTable(self)
-            table.setRowCount(len(row_defs) + 1)
-            table.setColumnCount(len(hourly) + 1)
-            table.horizontalHeader().hide()
+            table = TableWidget(self)
+            table.setColumnCount(6)
+            table.setHorizontalHeaderLabels(["시각", "날씨", "기온", "체감온도", "강수량", "강수확률"])
             table.verticalHeader().hide()
             table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-            table.setBorderRadius(12)
-            table.setColumnWidth(0, label_col_w)
-            for row_idx, (label, _key) in enumerate([("시각", None)] + row_defs):
-                item = QTableWidgetItem(label)
-                item.setForeground(_qcolor(c["subtext"]))
-                item.setFont(parent.font_body)
-                table.setItem(row_idx, 0, item)
+            table.setBorderRadius(theme.RADIUS_CARD)
+            table.verticalHeader().setDefaultSectionSize(theme.TABLE_ROW_HEIGHT)
+            table.horizontalHeader().setFixedHeight(theme.TABLE_HEADER_HEIGHT)
+            table.horizontalHeader().setStretchLastSection(False)
+            table.setWordWrap(False)
+            table.setTextElideMode(Qt.TextElideMode.ElideRight)
+            table.horizontalHeader().setFont(theme.font_role("label"))
+            header = table.horizontalHeader()
+            for col in range(6):
+                header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+            table.setRowCount(len(hourly))
 
-            for offset, hour in enumerate(hourly):
-                col = offset + 1
-                table.setColumnWidth(col, hour_col_w)
-                _set_cell(table, 0, col, _format_fcst_time(hour.get("time")), c["text"], parent.font_body)
-                _set_cell(table, 1, col, hour.get("condition") or "-", c["subtext"], parent.font_small)
-                temp = hour.get("temp")
-                _set_cell(table, 2, col, (f"{temp}°" if temp is not None else "-"), c["text"], parent.font_body)
-                feels_like = hour.get("feels_like")
-                _set_cell(
-                    table, 3, col, (f"{feels_like:.1f}°" if feels_like is not None else "-"),
-                    c["text"], parent.font_body,
+            def _restyle_table():
+                tc = theme.colors()
+                table.horizontalHeader().setStyleSheet(
+                    f"QHeaderView::section {{ background-color:{tc['surface_alt']}; color:{tc['text_primary']};"
+                    f" border:none; padding:0 {theme.SPACE_3}px; }}"
                 )
-                _set_cell(table, 4, col, hour.get("pcp") or "-", c["subtext"], parent.font_small)
-                pop_val = hour.get("pop")
-                _set_cell(
-                    table, 5, col, (f"{pop_val}%" if pop_val is not None else "-"),
-                    theme.pop_color(pop_val, c), parent.font_small,
-                )
+                for row, hour in enumerate(hourly):
+                    self._set_hour_cell(
+                        table, row, 0, _format_fcst_time(hour.get("time")), tc["text_primary"],
+                        theme.font_role("body"), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    )
+                    self._set_hour_cell(
+                        table, row, 1, hour.get("condition") or "-", tc["text_secondary"],
+                        theme.font_role("caption"), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    )
+                    temp = hour.get("temp")
+                    self._set_hour_cell(
+                        table, row, 2, (f"{temp}°" if temp is not None else "-"), tc["text_primary"],
+                        theme.font_role("body"), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                    )
+                    feels_like = hour.get("feels_like")
+                    self._set_hour_cell(
+                        table, row, 3, (f"{feels_like:.1f}°" if feels_like is not None else "-"),
+                        tc["text_primary"], theme.font_role("body"),
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                    )
+                    self._set_hour_cell(
+                        table, row, 4, hour.get("pcp") or "-", tc["text_secondary"],
+                        theme.font_role("caption"), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                    )
+                    pop_val = hour.get("pop")
+                    self._set_hour_cell(
+                        table, row, 5, (f"{pop_val}%" if pop_val is not None else "-"),
+                        theme.pop_color(pop_val, tc), theme.font_role("caption"),
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                    )
 
-            layout.addWidget(table, 1)
-
-            summary_card = make_card(self, c, radius=10)
-            summary_layout = QVBoxLayout(summary_card)
-            summary_label = QLabel("   |   ".join(summary_bits), summary_card)
-            summary_label.setFont(parent.font_body)
-            summary_label.setStyleSheet(qss(color=c["text"]))
-            summary_layout.addWidget(summary_label)
-            layout.addWidget(summary_card)
-
-            self.resize(820, 440)
+            _restyle_table()
+            self._on_theme_refresh(_restyle_table)
+            outer.addWidget(table, 1)
 
         close_btn = PushButton("닫기", self)
         close_btn.clicked.connect(self.close)
-        layout.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        outer.addWidget(uic.DialogFooter([close_btn], parent=self))
 
+        self.resize(680, 520 if hourly else 320)
         _bring_to_front(self)
+
+    @staticmethod
+    def _set_hour_cell(table, row, col, text, color_hex, font, align):
+        item = QTableWidgetItem(text)
+        item.setForeground(_qcolor(color_hex))
+        item.setFont(font)
+        item.setTextAlignment(align)
+        table.setItem(row, col, item)
 
 
 def _qcolor(hex_str):
@@ -338,38 +387,36 @@ def _qcolor(hex_str):
     return QColor(hex_str)
 
 
-def _set_cell(table, row, col, text, color_hex, font):
-    item = QTableWidgetItem(text)
-    item.setForeground(_qcolor(color_hex))
-    item.setFont(font)
-    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-    table.setItem(row, col, item)
+class RegionManagerDialog(_ThemedDialog):
+    """즐겨찾기 추가/삭제 로직(config.set_favorites, on_change 콜백)은 그대로
+    두고, 검색 결과 각 행을 "체크박스(추가/삭제) + 이미 즐겨찾기인 행만 보이는
+    삭제 아이콘" 구조로 명확히 하고, 빈 상태를 EmptyState로 표준화한다."""
 
-
-class RegionManagerDialog(QDialog):
     def __init__(self, parent, on_change):
         super().__init__(parent)
-        c = theme.colors()
         self.setWindowTitle("즐겨찾기 편집")
-        self.resize(480, 560)
+        self._bind_background()
+        self.setMinimumSize(520, 560)
         self.on_change = on_change
         self.favorites = set(config.get_favorites())
         self.font_body = parent.font_body
         self.font_small = parent.font_small
-        self.setStyleSheet(f"QDialog {{ background-color:{c['bg']}; }}")
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(
+            theme.DIALOG_CONTENT_MARGIN, theme.DIALOG_CONTENT_MARGIN,
+            theme.DIALOG_CONTENT_MARGIN, theme.DIALOG_CONTENT_MARGIN,
+        )
+        outer.setSpacing(theme.SPACE_4)
 
-        hint = QLabel("지역을 검색해 즐겨찾기에 추가/삭제하세요.", self)
-        hint.setFont(self.font_body)
-        hint.setStyleSheet(qss(color=c["text"]))
-        layout.addWidget(hint)
+        outer.addWidget(uic.DialogHeader(
+            "즐겨찾기 편집", "지역을 검색해 즐겨찾기에 추가하거나 삭제하세요.", self,
+        ))
 
         self.search_edit = SearchLineEdit(self)
         self.search_edit.setPlaceholderText("예: 수원, 강남구, 안동시")
         self.search_edit.textChanged.connect(self._render_results)
-        layout.addWidget(self.search_edit)
+        outer.addWidget(self.search_edit)
 
         self.scroll = ScrollArea(self)
         self.scroll.setWidgetResizable(True)
@@ -377,19 +424,43 @@ class RegionManagerDialog(QDialog):
         self.results_frame = QWidget()
         self.results_frame.setStyleSheet("background: transparent;")
         self.results_layout = QVBoxLayout(self.results_frame)
+        self.results_layout.setContentsMargins(0, 0, 0, 0)
+        self.results_layout.setSpacing(theme.SPACE_1)
         self.results_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.scroll.setWidget(self.results_frame)
-        layout.addWidget(self.scroll, 1)
+        outer.addWidget(self.scroll, 1)
 
-        btn_row = QHBoxLayout()
-        add_btn = PushButton("위도/경도로 직접 추가", self, FluentIcon.ADD)
+        add_btn = PushButton("위도·경도로 직접 추가", self, FluentIcon.PIN)
+        add_btn.setToolTip("지도에서 확인한 위도·경도로 새 지역을 추가합니다")
         add_btn.clicked.connect(self._open_custom_region_form)
-        btn_row.addWidget(add_btn)
-        btn_row.addStretch(1)
         close_btn = PushButton("닫기", self)
         close_btn.clicked.connect(self.close)
-        btn_row.addWidget(close_btn)
-        layout.addLayout(btn_row)
+        # Footer 버튼 정렬 규칙(취소/보조가 왼쪽, 주 행동이 오른쪽)과는 다른
+        # 성격의 화면이라 "직접 추가"는 왼쪽에 별도로 두고, 우측은 "닫기" 단독
+        # (Primary 버튼이 없는 화면이라 닫기는 중립 스타일 그대로).
+        footer = QHBoxLayout()
+        footer.setContentsMargins(0, 0, 0, 0)
+        footer.setSpacing(theme.SPACE_2)
+        footer.addWidget(add_btn)
+        footer.addStretch(1)
+        footer.addWidget(close_btn)
+        footer_wrap = QVBoxLayout()
+        footer_wrap.setContentsMargins(0, 0, 0, 0)
+        footer_wrap.setSpacing(theme.SPACE_3)
+        footer_divider = QFrame(self)
+        footer_divider.setFixedHeight(1)
+        footer_wrap.addWidget(footer_divider)
+        footer_wrap.addLayout(footer)
+        outer.addLayout(footer_wrap)
+
+        def _restyle_footer_divider():
+            fc = theme.colors()
+            footer_divider.setStyleSheet(f"background-color:{fc['divider']};")
+
+        _restyle_footer_divider()
+        self._on_theme_refresh(_restyle_footer_divider)
+        self._result_theme_refresh = []
+        self._on_theme_refresh(self._refresh_result_rows)
 
         self._render_results()
         _bring_to_front(self)
@@ -403,33 +474,69 @@ class RegionManagerDialog(QDialog):
             names = sorted(n for n in all_regions if query in n)
         return names[:80]
 
+    def _refresh_result_rows(self):
+        """_render_results()가 매번 새로 만드는 행들의 테마 재적용 콜백 -
+        검색어가 바뀔 때마다 _render_results()가 다시 불리므로, 이전 행을
+        가리키는 콜백이 self._extra_theme_refresh에 계속 쌓이지 않도록 이
+        목록(self._result_theme_refresh)은 매번 새로 비우고 이 메서드
+        하나만 다이얼로그 수명 동안 한 번 등록해 항상 "현재" 목록을 읽는다."""
+        for callback in getattr(self, "_result_theme_refresh", []):
+            callback()
+
     def _render_results(self, *_args):
         _clear_layout(self.results_layout)
+        self._result_theme_refresh = []
 
         query = self.search_edit.text().strip()
         names = self._current_matches()
-        c = theme.colors()
         if not query and not names:
-            label = QLabel("아직 즐겨찾기가 없습니다. 위 검색창에 지역명을 입력하세요.", self.results_frame)
-            label.setFont(self.font_small)
-            label.setStyleSheet(qss(color=c["subtext"]))
-            self.results_layout.addWidget(label)
+            empty = uic.EmptyState(
+                "아직 즐겨찾기가 없습니다", "위 검색창에 지역명을 입력해 추가하세요.", self.results_frame,
+            )
+            self.results_layout.addWidget(empty)
             return
         if query and not names:
-            label = QLabel("검색 결과가 없습니다.", self.results_frame)
-            label.setFont(self.font_small)
-            label.setStyleSheet(qss(color=c["subtext"]))
-            self.results_layout.addWidget(label)
+            empty = uic.EmptyState(
+                "검색 결과가 없습니다", f'"{query}"와(과) 일치하는 지역이 없습니다.', self.results_frame,
+            )
+            self.results_layout.addWidget(empty)
             return
 
         custom_names = set(regions.load_custom_regions().keys())
+        metrics = QFontMetrics(self.font_body)
         for name in names:
-            label = name + ("  [직접 추가]" if name in custom_names else "")
-            checkbox = CheckBox(label, self.results_frame)
+            is_favorite = name in self.favorites
+            row = QFrame(self.results_frame)
+            row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(theme.SPACE_2, theme.SPACE_1, theme.SPACE_2, theme.SPACE_1)
+            row_layout.setSpacing(theme.SPACE_2)
+
+            label_text = name + ("  ·  직접 추가" if name in custom_names else "")
+            elided = metrics.elidedText(label_text, Qt.TextElideMode.ElideRight, 320)
+            checkbox = CheckBox(elided, row)
             checkbox.setFont(self.font_body)
-            checkbox.setChecked(name in self.favorites)
+            checkbox.setToolTip(label_text)
+            checkbox.setChecked(is_favorite)
             checkbox.stateChanged.connect(lambda _state, n=name, cb=checkbox: self._toggle(n, cb))
-            self.results_layout.addWidget(checkbox)
+            row_layout.addWidget(checkbox, 1)
+
+            if is_favorite:
+                delete_btn = uic.DangerHoverIconButton(FluentIcon.DELETE, tooltip=f"{name} 즐겨찾기에서 삭제", parent=row)
+                delete_btn.setAccessibleName(f"{name} 즐겨찾기에서 삭제")
+                # 기존 삭제 동작(_toggle의 else 분기) 그대로 재사용 - 체크박스를
+                # 해제시키는 것으로 트리거해 새 삭제 로직을 만들지 않는다.
+                delete_btn.clicked.connect(lambda _c=False, cb=checkbox: cb.setChecked(False))
+                row_layout.addWidget(delete_btn)
+
+            def _restyle_row(row=row, is_favorite=is_favorite):
+                rc = theme.colors()
+                bg = rc["surface_selected"] if is_favorite else "transparent"
+                row.setStyleSheet(f"QFrame {{ background-color:{bg}; border-radius:{theme.RADIUS_CONTROL}px; }}")
+
+            _restyle_row()
+            self._result_theme_refresh.append(_restyle_row)
+            self.results_layout.addWidget(row)
 
     def _toggle(self, name, checkbox):
         if checkbox.isChecked():
@@ -440,76 +547,121 @@ class RegionManagerDialog(QDialog):
             self.favorites.discard(name)
             config.set_favorites(sorted(self.favorites))
             self.on_change(removed=name)
+        self._render_results()
 
     def _open_custom_region_form(self):
         CustomRegionForm(self, self._render_results)
 
 
-class CustomRegionForm(QDialog):
+class CustomRegionForm(_ThemedDialog):
+    """좌표 검증(float 파싱)·grid 변환(regions.add_custom_region)·저장 순서는
+    그대로 두고, 오류 표시만 QMessageBox 팝업에서 필드 옆 인라인 오류로 바꾼다."""
+
     def __init__(self, parent, on_saved):
         super().__init__(parent)
-        c = theme.colors()
         self.setWindowTitle("지역 직접 추가")
-        self.resize(380, 420)
+        self._bind_background()
+        self.setMinimumWidth(420)
         self.on_saved = on_saved
-        self.setStyleSheet(f"QDialog {{ background-color:{c['bg']}; }}")
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(
+            theme.DIALOG_CONTENT_MARGIN, theme.DIALOG_CONTENT_MARGIN,
+            theme.DIALOG_CONTENT_MARGIN, theme.DIALOG_CONTENT_MARGIN,
+        )
+        outer.setSpacing(theme.SPACE_5)
 
-        fields = [
-            ("name", "지역 이름 (예: 우리동네)"),
-            ("lat", "위도 (예: 37.5665)"),
-            ("lon", "경도 (예: 126.9780)"),
-        ]
-        self.edits = {}
-        for key, placeholder in fields:
-            label = QLabel(placeholder, self)
-            label.setStyleSheet(qss(color=c["text"]))
-            layout.addWidget(label)
-            edit = LineEdit(self)
-            layout.addWidget(edit)
-            self.edits[key] = edit
+        outer.addWidget(uic.DialogHeader(
+            "지역 직접 추가", "위도·경도를 아는 위치를 즐겨찾기에 새로 등록합니다.", self,
+        ))
 
-        sido_label = QLabel("시도 (중기예보 권역 판별용)", self)
-        sido_label.setStyleSheet(qss(color=c["text"]))
-        layout.addWidget(sido_label)
+        content = QVBoxLayout()
+        content.setSpacing(theme.SPACE_4)
+
+        self.name_edit = LineEdit(self)
+        self.name_edit.setPlaceholderText("예: 진천군")
+        self.name_field = uic.FormField("지역 이름", self.name_edit, required=True, parent=self)
+        content.addWidget(self.name_field)
+
+        self.lat_edit = LineEdit(self)
+        self.lat_edit.setPlaceholderText("예: 36.855")
+        self.lat_field = uic.FormField("위도", self.lat_edit, required=True, parent=self)
+        content.addWidget(self.lat_field)
+
+        self.lon_edit = LineEdit(self)
+        self.lon_edit.setPlaceholderText("예: 127.435")
+        self.lon_field = uic.FormField("경도", self.lon_edit, required=True, parent=self)
+        content.addWidget(self.lon_field)
+
         self.sido_combo = ComboBox(self)
         self.sido_combo.addItems(regions.SIDO_NAMES)
-        layout.addWidget(self.sido_combo)
-
-        note = QLabel(
-            "위도/경도는 구글맵 등 지도에서 원하는 위치를 우클릭하면 확인할 수 있습니다.",
-            self,
+        self.sido_field = uic.FormField(
+            "시도", self.sido_combo, helper_text="중기예보 권역을 구분하는 데 쓰입니다.", parent=self,
         )
-        note.setWordWrap(True)
-        note.setStyleSheet(qss(color=c["subtext"]))
-        layout.addWidget(note)
-        layout.addStretch(1)
+        content.addWidget(self.sido_field)
+        outer.addLayout(content)
 
-        btn_row = QHBoxLayout()
-        btn_row.addStretch(1)
+        self._hint_label = QLabel(
+            "위도·경도는 구글맵 등 지도에서 원하는 위치를 우클릭하면 확인할 수 있습니다.", self,
+        )
+        self._hint_label.setFont(theme.font_role("caption"))
+        self._hint_label.setWordWrap(True)
+        outer.addWidget(self._hint_label)
+
+        outer.addStretch(1)
+
         cancel_btn = PushButton("취소", self)
         cancel_btn.clicked.connect(self.close)
-        btn_row.addWidget(cancel_btn)
         save_btn = PrimaryPushButton("추가", self)
+        save_btn.setDefault(True)
         save_btn.clicked.connect(self._save)
-        btn_row.addWidget(save_btn)
-        layout.addLayout(btn_row)
+        outer.addWidget(uic.DialogFooter([cancel_btn, save_btn], parent=self))
+
+        self.setTabOrder(self.name_edit, self.lat_edit)
+        self.setTabOrder(self.lat_edit, self.lon_edit)
+        self.setTabOrder(self.lon_edit, self.sido_combo)
+        self.setTabOrder(self.sido_combo, cancel_btn)
+        self.setTabOrder(cancel_btn, save_btn)
+
+        self._refresh_hint_style()
+        self._on_theme_refresh(self._refresh_hint_style)
 
         _bring_to_front(self)
 
+    def _refresh_hint_style(self):
+        c = theme.colors()
+        self._hint_label.setStyleSheet(f"color:{c['text_tertiary']}; background:transparent;")
+
     def _save(self):
-        name = self.edits["name"].text().strip()
+        name = self.name_edit.text().strip()
+        lat_text = self.lat_edit.text().strip()
+        lon_text = self.lon_edit.text().strip()
+
+        first_invalid = None
+        if name:
+            self.name_field.clear_error()
+        else:
+            self.name_field.set_error("지역 이름을 입력하세요.")
+            first_invalid = first_invalid or self.name_edit
+
+        lat = lon = None
         try:
-            lat = float(self.edits["lat"].text().strip())
-            lon = float(self.edits["lon"].text().strip())
+            lat = float(lat_text)
+            self.lat_field.clear_error()
         except ValueError:
-            QMessageBox.warning(self, "입력 오류", "위도/경도는 숫자로 입력하세요.")
+            self.lat_field.set_error("위도는 숫자로 입력하세요.")
+            first_invalid = first_invalid or self.lat_edit
+        try:
+            lon = float(lon_text)
+            self.lon_field.clear_error()
+        except ValueError:
+            self.lon_field.set_error("경도는 숫자로 입력하세요.")
+            first_invalid = first_invalid or self.lon_edit
+
+        if first_invalid is not None:
+            first_invalid.setFocus()
             return
-        if not name:
-            QMessageBox.warning(self, "입력 필요", "지역 이름을 입력하세요.")
-            return
+
         regions.add_custom_region(name, lat, lon, self.sido_combo.currentText())
         config.add_favorite(name)
         self.parent().favorites.add(name)
@@ -519,15 +671,17 @@ class CustomRegionForm(QDialog):
         self.close()
 
 
-class BranchRangeDialog(QDialog):
+class BranchRangeDialog(_ThemedDialog):
     """지사 이름을 클릭하면 뜨는 창: 날짜와 시간대(시작~종료)를 골라 그 구간의
     누적강수량을 지사 관할 지역별로 비교하고, 가장 많은 지역을 하이라이트한다.
     지난 실측 2일 + 단기예보 날짜를 고를 수 있다. 중기예보(4일 이후)는 3시간 단위
-    시간별 데이터를 제공하지 않아 날짜 선택 대상에서 제외한다."""
+    시간별 데이터를 제공하지 않아 날짜 선택 대상에서 제외한다. 날짜/시간대 선택
+    로직과 누적강수량 계산(kma_client.sum_pcp_range 등)은 그대로 두고, 결과
+    표시만 오른쪽 정렬 수치 + accent 강조(경고색이 아님 - "많은 비=위험"이라는
+    임의 기준을 만들지 않기 위해 danger/warning 대신 accent_soft를 쓴다)로 바꾼다."""
 
     def __init__(self, parent, branch_name, members, reports):
         super().__init__(parent)
-        c = theme.colors()
         self.branch_name = branch_name
         self.members = members
         self.reports = reports
@@ -535,83 +689,92 @@ class BranchRangeDialog(QDialog):
         self.font_body = parent.font_body
         self.font_small = parent.font_small
         self.setWindowTitle(f"{branch_name} - 시간대별 누적강수량")
-        self.resize(460, 580)
-        self.setStyleSheet(f"QDialog {{ background-color:{c['bg']}; }}")
+        self._bind_background()
+        self.setMinimumSize(480, 560)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-
-        title = QLabel(f"{branch_name} 관할 지역 시간대별 누적강수량", self)
-        title.setFont(self.font_title)
-        title.setStyleSheet(qss(color=c["text"]))
-        layout.addWidget(title)
-
-        note = QLabel(
-            "중기예보(4일 이후)는 시간별 데이터가 없어 선택할 수 없습니다.\n(지난 실측 2일은 선택 가능)",
-            self,
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(
+            theme.DIALOG_CONTENT_MARGIN, theme.DIALOG_CONTENT_MARGIN,
+            theme.DIALOG_CONTENT_MARGIN, theme.DIALOG_CONTENT_MARGIN,
         )
-        note.setFont(self.font_small)
-        note.setStyleSheet(qss(color=c["subtext"]))
-        layout.addWidget(note)
+        outer.setSpacing(theme.SPACE_4)
+
+        outer.addWidget(uic.DialogHeader(
+            branch_name,
+            "선택한 날짜·시간대의 관할 지역별 누적강수량을 비교합니다. "
+            "(지난 실측 2일 + 단기예보만 선택 가능 - 중기예보는 시간별 데이터가 없습니다)",
+            self,
+        ))
 
         self.dates = self._short_term_dates()
 
         if not self.dates:
-            empty = QLabel(
-                "선택 가능한 날짜가 없습니다.\n(즐겨찾기 조회가 끝난 뒤 다시 시도하세요)", self
+            empty = uic.EmptyState(
+                "선택 가능한 날짜가 없습니다",
+                "즐겨찾기 조회가 끝난 뒤 다시 시도해 주세요.",
+                self,
             )
-            empty.setFont(self.font_small)
-            empty.setStyleSheet(qss(color=c["subtext"]))
-            layout.addWidget(empty)
-            layout.addStretch(1)
+            outer.addWidget(empty, 1)
             close_btn = PushButton("닫기", self)
             close_btn.clicked.connect(self.close)
-            layout.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+            outer.addWidget(uic.DialogFooter([close_btn], parent=self))
             _bring_to_front(self)
             return
 
         picker_row = QHBoxLayout()
-        date_label_hdr = QLabel("날짜", self)
-        date_label_hdr.setFont(self.font_body)
-        date_label_hdr.setStyleSheet(qss(color=c["subtext"]))
-        picker_row.addWidget(date_label_hdr)
+        picker_row.setSpacing(theme.SPACE_3)
+        self._date_hdr = QLabel("날짜", self)
+        self._date_hdr.setFont(self.font_body)
+        picker_row.addWidget(self._date_hdr)
 
         self.date_seg = SegmentedWidget(self)
         for d in self.dates:
             self.date_seg.addItem(d, f"{d[4:6]}/{d[6:8]}", onClick=lambda _c=False, dd=d: self._on_date_changed(dd))
         picker_row.addWidget(self.date_seg, 1)
-        layout.addLayout(picker_row)
+        outer.addLayout(picker_row)
 
         time_row = QHBoxLayout()
-        start_hdr = QLabel("시작", self)
-        start_hdr.setFont(self.font_body)
-        start_hdr.setStyleSheet(qss(color=c["subtext"]))
-        time_row.addWidget(start_hdr)
+        time_row.setSpacing(theme.SPACE_3)
+        self._start_hdr = QLabel("시작", self)
+        self._start_hdr.setFont(self.font_body)
+        time_row.addWidget(self._start_hdr)
         self.start_combo = ComboBox(self)
         self.start_combo.currentTextChanged.connect(lambda _v: self._render())
         time_row.addWidget(self.start_combo)
-        end_hdr = QLabel("종료", self)
-        end_hdr.setFont(self.font_body)
-        end_hdr.setStyleSheet(qss(color=c["subtext"]))
-        time_row.addWidget(end_hdr)
+        self._end_hdr = QLabel("종료", self)
+        self._end_hdr.setFont(self.font_body)
+        time_row.addWidget(self._end_hdr)
         self.end_combo = ComboBox(self)
         self.end_combo.currentTextChanged.connect(lambda _v: self._render())
         time_row.addWidget(self.end_combo)
         time_row.addStretch(1)
-        layout.addLayout(time_row)
+        outer.addLayout(time_row)
 
         self.result_scroll = ScrollArea(self)
         self.result_scroll.setWidgetResizable(True)
-        result_card = make_card(self, c, radius=12)
-        self.result_layout = QVBoxLayout(result_card)
+        self.result_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        result_frame = QWidget()
+        result_frame.setStyleSheet("background: transparent;")
+        self.result_layout = QVBoxLayout(result_frame)
+        self.result_layout.setContentsMargins(0, 0, 0, 0)
+        self.result_layout.setSpacing(theme.SPACE_1)
         self.result_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.result_scroll.setWidget(result_card)
-        self.result_scroll.setStyleSheet("QScrollArea { border: none; }")
-        layout.addWidget(self.result_scroll, 1)
+        self.result_scroll.setWidget(result_frame)
+        outer.addWidget(self.result_scroll, 1)
 
         close_btn = PushButton("닫기", self)
         close_btn.clicked.connect(self.close)
-        layout.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        outer.addWidget(uic.DialogFooter([close_btn], parent=self))
+
+        def _restyle_pickers():
+            pc = theme.colors()
+            for hdr in (self._date_hdr, self._start_hdr, self._end_hdr):
+                hdr.setStyleSheet(f"color:{pc['text_secondary']}; background:transparent;")
+
+        _restyle_pickers()
+        self._on_theme_refresh(_restyle_pickers)
+        self._result_theme_refresh = []
+        self._on_theme_refresh(self._refresh_result_rows)
 
         self.date_seg.setCurrentItem(self.dates[0])
         self._on_date_changed(self.dates[0])
@@ -672,19 +835,28 @@ class BranchRangeDialog(QDialog):
             return None
         return int(label[:2])
 
+    def _refresh_result_rows(self):
+        """_render()가 매번 새로 만드는 result_layout 내용물의 테마 재적용
+        콜백만 모아 둔 별도 목록 - self._extra_theme_refresh(다이얼로그 수명
+        내내 누적)에 직접 쌓으면 _render()를 다시 부를 때마다 이미 지워진
+        이전 행 위젯을 가리키는 콜백이 계속 남아 다음 테마 전환에서 삭제된
+        C++ 객체를 건드리게 된다. 그래서 이 목록은 _render()가 매번 새로
+        비우고, 다이얼로그 수명 동안엔 이 메서드 하나만 _extra_theme_refresh에
+        등록해 항상 "현재" 목록을 읽게 한다."""
+        for callback in getattr(self, "_result_theme_refresh", []):
+            callback()
+
     def _render(self):
         _clear_layout(self.result_layout)
+        self._result_theme_refresh = []
 
-        c = theme.colors()
         date_str = getattr(self, "_current_date", None)
         start_hour = self._selected_hour(self.start_combo.currentText())
         end_hour = self._selected_hour(self.end_combo.currentText())
         if date_str is None or start_hour is None or end_hour is None:
             return
         if start_hour >= end_hour:
-            warn = QLabel("시작 시각은 종료 시각보다 앞서야 합니다.", self)
-            warn.setFont(self.font_small)
-            warn.setStyleSheet(qss(color=c["warn_text"]))
+            warn = uic.InlineBanner("시작 시각은 종료 시각보다 앞서야 합니다.", level="warning", parent=self)
             self.result_layout.addWidget(warn)
             return
 
@@ -712,127 +884,281 @@ class BranchRangeDialog(QDialog):
         header = QLabel(
             f"{date_str[4:6]}/{date_str[6:8]}  {start_hour:02d}시~{end_hour:02d}시 누적강수량", self
         )
-        header.setFont(self.font_body)
-        header.setStyleSheet(qss(color=c["text"]))
+        header.setFont(theme.font_role("label"))
+
+        def _restyle_header(header=header):
+            hc = theme.colors()
+            header.setStyleSheet(f"color:{hc['text_secondary']}; background:transparent;")
+
+        _restyle_header()
+        self._result_theme_refresh.append(_restyle_header)
         self.result_layout.addWidget(header)
 
+        # 최다 강수 지역은 계산 결과(best_name/best_amount)만 그대로 강조한다 -
+        # danger/warning처럼 "위험"을 뜻하는 색 대신 accent_soft(단순 강조)를
+        # 써서 "비가 많이 온 지역=위험"이라는 임의 기준을 만들지 않는다.
         for name, pcp_text, amount in rows:
             is_best = name == best_name and best_amount > 0
             row = QFrame(self)
-            row.setStyleSheet(qss(bg=(c["warn_bg"] if is_best else "transparent"), radius=8))
+            row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
             row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(theme.SPACE_3, theme.SPACE_2, theme.SPACE_3, theme.SPACE_2)
             name_label = QLabel(name, row)
-            name_label.setFont(self.font_body)
-            name_label.setStyleSheet(qss(color=(c["warn_text"] if is_best else c["text"])))
+            name_label.setFont(theme.font_role("body_medium" if is_best else "body"))
             row_layout.addWidget(name_label, 1)
             value_label = QLabel(("★ " if is_best else "") + pcp_text, row)
-            value_font = QFont(self.font_body)
-            value_font.setBold(is_best)
-            value_label.setFont(value_font)
-            value_label.setStyleSheet(qss(color=(c["warn_text"] if is_best else c["text"])))
+            value_label.setFont(theme.font_role("body_medium" if is_best else "body"))
+            value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             row_layout.addWidget(value_label)
             self.result_layout.addWidget(row)
 
+            def _restyle_result_row(row=row, name_label=name_label, value_label=value_label, is_best=is_best):
+                rc = theme.colors()
+                bg = rc["accent_soft"] if is_best else "transparent"
+                fg = rc["accent"] if is_best else rc["text_primary"]
+                row.setStyleSheet(f"QFrame {{ background-color:{bg}; border-radius:{theme.RADIUS_CONTROL}px; }}")
+                name_label.setStyleSheet(f"color:{fg}; background:transparent;")
+                value_label.setStyleSheet(f"color:{fg}; background:transparent;")
 
-class BranchManagerDialog(QDialog):
+            _restyle_result_row()
+            self._result_theme_refresh.append(_restyle_result_row)
+
+
+class BranchManagerDialog(_ThemedDialog):
     """지사(관할 구역) 관리: 지사별로 어떤 즐겨찾기 지역이 속하는지 편집.
-    '즐겨찾기 종합 보기'에서 지사 단위로 묶어서 보여주는 데 쓰인다."""
+    '즐겨찾기 종합 보기'에서 지사 단위로 묶어서 보여주는 데 쓰인다.
+
+    지사 추가·삭제·지역 배정/해제 로직(config.add_branch/remove_branch/
+    add_region_to_branch/remove_region_from_branch, 검색 일치 검증)은 그대로
+    두고, "지사 목록(왼쪽) / 선택한 지사의 배정 지역(오른쪽)" 좌우 분할로 관계를
+    분명히 한다 - 지사당 카드+인라인 검색창을 세로로 늘어놓던 예전 구조 대신,
+    지금 편집 중인 지사가 항상 하나로 명확하다."""
 
     def __init__(self, parent, on_change):
         super().__init__(parent)
-        c = theme.colors()
         self.setWindowTitle("지사 관리")
-        self.resize(460, 600)
+        self._bind_background()
+        self.setMinimumSize(600, 540)
         self.on_change = on_change
         self.font_body = parent.font_body
         self.font_small = parent.font_small
-        self.setStyleSheet(f"QDialog {{ background-color:{c['bg']}; }}")
+        self.selected_branch = None
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-
-        note = QLabel(
-            "지사별로 즐겨찾기 지역을 묶어서 관리합니다. 지역 하나가 여러 지사에\n동시에 속할 수도 있습니다.",
-            self,
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(
+            theme.DIALOG_CONTENT_MARGIN, theme.DIALOG_CONTENT_MARGIN,
+            theme.DIALOG_CONTENT_MARGIN, theme.DIALOG_CONTENT_MARGIN,
         )
-        note.setFont(self.font_small)
-        note.setStyleSheet(qss(color=c["subtext"]))
-        layout.addWidget(note)
+        outer.setSpacing(theme.SPACE_4)
 
-        self.scroll = ScrollArea(self)
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-        self.list_frame = QWidget()
-        self.list_frame.setStyleSheet("background: transparent;")
-        self.list_layout = QVBoxLayout(self.list_frame)
-        self.list_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.scroll.setWidget(self.list_frame)
-        layout.addWidget(self.scroll, 1)
+        outer.addWidget(uic.DialogHeader(
+            "지사 관리",
+            "지사별로 즐겨찾기 지역을 묶어서 관리합니다. 지역 하나가 여러 지사에 동시에 속할 수도 있습니다.",
+            self,
+        ))
 
-        btn_row = QHBoxLayout()
-        add_btn = PushButton("새 지사 추가", self, FluentIcon.ADD)
-        add_btn.clicked.connect(self._add_branch)
-        btn_row.addWidget(add_btn)
-        btn_row.addStretch(1)
+        splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        splitter.setHandleWidth(theme.SPACE_1)
+        splitter.setChildrenCollapsible(False)
+        self._splitter = splitter
+
+        # ---------- 왼쪽: 지사 목록 ----------
+        left = QWidget(splitter)
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(theme.SPACE_2)
+
+        add_branch_btn = PushButton("새 지사 추가", left, FluentIcon.ADD)
+        add_branch_btn.clicked.connect(self._add_branch)
+        left_layout.addWidget(add_branch_btn)
+
+        self.branch_stack = QStackedWidget(left)
+        self.branch_list = ListWidget(self.branch_stack)
+        self.branch_list.setFrameShape(QFrame.Shape.NoFrame)
+        self.branch_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.branch_list.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.branch_list.itemClicked.connect(self._on_branch_item_clicked)
+        self._style_branch_list()
+        self._on_theme_refresh(self._style_branch_list)
+        self.branch_stack.addWidget(self.branch_list)
+        self.branch_empty_state = uic.EmptyState(
+            "아직 지사가 없습니다", "위 버튼으로 첫 지사를 만드세요.", self.branch_stack,
+        )
+        self.branch_stack.addWidget(self.branch_empty_state)
+        left_layout.addWidget(self.branch_stack, 1)
+
+        left.setMinimumWidth(180)
+        left.setMaximumWidth(240)
+        splitter.addWidget(left)
+
+        # ---------- 오른쪽: 선택한 지사의 배정 지역 ----------
+        right = QWidget(splitter)
+        self.right_layout = QVBoxLayout(right)
+        self.right_layout.setContentsMargins(0, 0, 0, 0)
+        self.right_layout.setSpacing(theme.SPACE_3)
+        splitter.addWidget(right)
+        self._right_theme_refresh = []
+        self._on_theme_refresh(self._refresh_right_panel_theme)
+
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        outer.addWidget(splitter, 1)
+
         close_btn = PushButton("닫기", self)
         close_btn.clicked.connect(self.close)
-        btn_row.addWidget(close_btn)
-        layout.addLayout(btn_row)
+        outer.addWidget(uic.DialogFooter([close_btn], parent=self))
 
         self._render()
         _bring_to_front(self)
 
-    def _render(self):
-        _clear_layout(self.list_layout)
-
+    def _style_branch_list(self):
         c = theme.colors()
+        self.branch_list.setStyleSheet(f"""
+            QListWidget {{ background: transparent; border: none; outline: none; }}
+            QListWidget::item {{
+                padding: 0px {theme.SPACE_3}px; border-radius: {theme.RADIUS_CONTROL}px;
+                color: {c['text_primary']};
+            }}
+            QListWidget::item:hover {{ background-color: {c['surface_hover']}; }}
+            QListWidget::item:selected {{
+                background-color: {c['surface_selected']}; color: {c['text_primary']}; font-weight: 500;
+            }}
+        """)
+
+    def _on_branch_item_clicked(self, item):
+        self.selected_branch = item.data(Qt.ItemDataRole.UserRole)
+        self._render_right_panel()
+
+    # ---------- 렌더링 ----------
+    def _render(self):
+        """지사 목록(왼쪽)을 다시 그린다 - 지사 추가/삭제 뒤에만 부르고,
+        지역 배정만 바뀐 경우엔 _render_right_panel()만 다시 부르면 된다."""
         branches = config.get_branches()
-        if not branches:
-            empty = QLabel("아직 지사가 없습니다. '새 지사 추가'로 만드세요.", self.list_frame)
-            empty.setFont(self.font_small)
-            empty.setStyleSheet(qss(color=c["subtext"]))
-            self.list_layout.addWidget(empty)
+        names = sorted(branches)
+
+        if not names:
+            self.selected_branch = None
+            self.branch_stack.setCurrentWidget(self.branch_empty_state)
+            self._render_right_panel()
+            return
+        self.branch_stack.setCurrentWidget(self.branch_list)
+
+        if self.selected_branch not in names:
+            self.selected_branch = names[0]
+
+        self.branch_list.clear()
+        for name in names:
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, name)
+            item.setToolTip(name)
+            item.setSizeHint(QSize(0, 36))
+            self.branch_list.addItem(item)
+            if name == self.selected_branch:
+                self.branch_list.setCurrentItem(item)
+
+        self._render_right_panel()
+
+    def _refresh_right_panel_theme(self):
+        """_render_right_panel()이 매번 새로 만드는 위젯들의 테마 재적용
+        콜백 - 지사 선택/지역 추가·삭제마다 다시 불리므로, 이전 행을 가리키는
+        콜백이 self._extra_theme_refresh에 계속 쌓이지 않도록 이 목록은 매번
+        새로 비우고 이 메서드 하나만 다이얼로그 수명 동안 한 번 등록한다."""
+        for callback in getattr(self, "_right_theme_refresh", []):
+            callback()
+
+    def _render_right_panel(self):
+        _clear_layout(self.right_layout)
+        self._right_theme_refresh = []
+        branches = config.get_branches()
+
+        if self.selected_branch is None or self.selected_branch not in branches:
+            empty = uic.EmptyState(
+                "지사를 선택하세요", "왼쪽 목록에서 지사를 선택하면 배정된 지역을 관리할 수 있습니다.",
+                self,
+            )
+            self.right_layout.addWidget(empty, 1)
             return
 
-        for branch_name in sorted(branches):
-            section = make_card(self.list_frame, c, radius=12)
-            section_layout = QVBoxLayout(section)
+        branch_name = self.selected_branch
+        region_names = branches[branch_name]
 
-            header = QHBoxLayout()
-            name_label = QLabel(branch_name, section)
-            name_label.setFont(self.font_body)
-            name_label.setStyleSheet(qss(color=c["text"]))
-            header.addWidget(name_label, 1)
-            del_btn = TransparentPushButton("지사 삭제", section, FluentIcon.DELETE)
-            del_btn.clicked.connect(lambda _c=False, b=branch_name: self._remove_branch(b))
-            header.addWidget(del_btn)
-            section_layout.addLayout(header)
+        header_row = QHBoxLayout()
+        header_row.setSpacing(theme.SPACE_2)
+        name_label = QLabel(branch_name, self)
+        name_label.setFont(theme.font_role("card_title"))
+        header_row.addWidget(name_label, 1)
+        del_branch_btn = uic.DangerHoverIconButton(
+            FluentIcon.DELETE, tooltip=f"{branch_name} 지사 삭제", parent=self,
+        )
+        del_branch_btn.setAccessibleName(f"{branch_name} 지사 삭제")
+        del_branch_btn.clicked.connect(lambda _c=False, b=branch_name: self._remove_branch(b))
+        header_row.addWidget(del_branch_btn)
+        self.right_layout.addLayout(header_row)
 
-            for region_name in branches[branch_name]:
-                row = QHBoxLayout()
-                region_label = QLabel(region_name, section)
-                region_label.setFont(self.font_small)
-                region_label.setStyleSheet(qss(color=c["subtext"]))
-                row.addWidget(region_label, 1)
-                remove_btn = TransparentPushButton("제거", section)
+        def _restyle_name_label(name_label=name_label):
+            nc = theme.colors()
+            name_label.setStyleSheet(f"color:{nc['text_primary']}; background:transparent;")
+
+        _restyle_name_label()
+        self._right_theme_refresh.append(_restyle_name_label)
+
+        region_scroll = ScrollArea(self)
+        region_scroll.setWidgetResizable(True)
+        region_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        region_frame = QWidget()
+        region_frame.setStyleSheet("background: transparent;")
+        region_layout = QVBoxLayout(region_frame)
+        region_layout.setContentsMargins(0, 0, 0, 0)
+        region_layout.setSpacing(theme.SPACE_1)
+        region_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        if not region_names:
+            # "지사가 없음"과는 다른 상태 - 지사는 있지만 배정된 지역이 없는
+            # 경우라, 배너 문구도 다르게 안내한다.
+            hint = uic.InlineBanner(
+                "이 지사에 배정된 지역이 없습니다. 아래에서 즐겨찾기 지역을 검색해 추가하세요.",
+                level="info", parent=region_frame,
+            )
+            region_layout.addWidget(hint)
+        else:
+            for region_name in region_names:
+                row = QFrame(region_frame)
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(theme.SPACE_2, theme.SPACE_1, theme.SPACE_2, theme.SPACE_1)
+                region_label = QLabel(region_name, row)
+                region_label.setFont(self.font_body)
+                row_layout.addWidget(region_label, 1)
+                remove_btn = uic.DangerHoverIconButton(
+                    FluentIcon.REMOVE, tooltip=f"{region_name} 배정 해제", parent=row,
+                )
+                remove_btn.setAccessibleName(f"{region_name} 배정 해제")
                 remove_btn.clicked.connect(
                     lambda _c=False, b=branch_name, r=region_name: self._remove_region(b, r)
                 )
-                row.addWidget(remove_btn)
-                section_layout.addLayout(row)
+                row_layout.addWidget(remove_btn)
 
-            add_row = QHBoxLayout()
-            search_edit = LineEdit(section)
-            search_edit.setPlaceholderText("즐겨찾기 지역 검색해서 추가")
-            add_row.addWidget(search_edit, 1)
-            add_btn = PushButton("추가", section)
-            add_btn.clicked.connect(
-                lambda _c=False, b=branch_name, e=search_edit: self._add_region_from_search(b, e)
-            )
-            add_row.addWidget(add_btn)
-            section_layout.addLayout(add_row)
+                def _restyle_region_label(region_label=region_label):
+                    rc = theme.colors()
+                    region_label.setStyleSheet(f"color:{rc['text_primary']}; background:transparent;")
 
-            self.list_layout.addWidget(section)
+                _restyle_region_label()
+                self._right_theme_refresh.append(_restyle_region_label)
+                region_layout.addWidget(row)
+
+        region_scroll.setWidget(region_frame)
+        self.right_layout.addWidget(region_scroll, 1)
+
+        add_row = QHBoxLayout()
+        add_row.setSpacing(theme.SPACE_2)
+        search_edit = LineEdit(self)
+        search_edit.setPlaceholderText("즐겨찾기 지역 검색해서 추가")
+        add_row.addWidget(search_edit, 1)
+        add_region_btn = PushButton("추가", self)
+        add_region_btn.clicked.connect(
+            lambda _c=False, b=branch_name, e=search_edit: self._add_region_from_search(b, e)
+        )
+        add_row.addWidget(add_region_btn)
+        self.right_layout.addLayout(add_row)
 
     def _add_region_from_search(self, branch_name, search_edit):
         query = search_edit.text().strip()
@@ -852,16 +1178,17 @@ class BranchManagerDialog(QDialog):
             )
             return
         config.add_region_to_branch(branch_name, matches[0])
-        self._render()
+        self._render_right_panel()
         self.on_change()
 
     def _remove_region(self, branch_name, region_name):
         config.remove_region_from_branch(branch_name, region_name)
-        self._render()
+        self._render_right_panel()
         self.on_change()
 
     def _remove_branch(self, branch_name):
         config.remove_branch(branch_name)
+        self.selected_branch = None
         self._render()
         self.on_change()
 
@@ -870,47 +1197,65 @@ class BranchManagerDialog(QDialog):
         if not ok or not name.strip():
             return
         config.add_branch(name.strip())
+        self.selected_branch = name.strip()
         self._render()
         self.on_change()
         toast(self.parent(), "success", "지사 추가됨", f"'{name.strip()}' 지사를 추가했습니다.")
 
 
-class SettingsDialog(QDialog):
+class SettingsDialog(_ThemedDialog):
+    """서비스키 저장 위치(config.set_service_key)와 "키 표시" 로직은 그대로
+    두고, 서비스키 입력을 label+helper text로 묶은 FormField 하나로 표준
+    Header/Content/Footer 구조에 얹는다."""
+
     def __init__(self, parent, on_change):
         super().__init__(parent)
-        c = theme.colors()
         self.setWindowTitle("설정 - 기상청 서비스키")
-        self.resize(520, 200)
+        self._bind_background()
+        self.setMinimumWidth(460)
         self.on_change = on_change
-        self.setStyleSheet(f"QDialog {{ background-color:{c['bg']}; }}")
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(
+            theme.DIALOG_CONTENT_MARGIN, theme.DIALOG_CONTENT_MARGIN,
+            theme.DIALOG_CONTENT_MARGIN, theme.DIALOG_CONTENT_MARGIN,
+        )
+        outer.setSpacing(theme.SPACE_5)
 
-        note = QLabel("공공데이터포털(data.go.kr)에서 발급받은 서비스키(디코딩 키)를 입력하세요.", self)
-        note.setWordWrap(True)
-        note.setStyleSheet(qss(color=c["text"]))
-        layout.addWidget(note)
+        outer.addWidget(uic.DialogHeader(
+            "기상청 API 서비스키",
+            "공공데이터포털(data.go.kr)에서 발급받은 서비스키(디코딩 키)로 실시간·예보 데이터를 조회합니다.",
+            self,
+        ))
 
         self.key_edit = LineEdit(self)
         self.key_edit.setText(config.get_service_key())
         self.key_edit.setEchoMode(LineEdit.EchoMode.Password)
-        layout.addWidget(self.key_edit)
+        self.key_edit.setPlaceholderText("공공데이터포털 서비스키를 붙여넣으세요")
+        self.key_field = uic.FormField(
+            "기상청 API 서비스키", self.key_edit,
+            helper_text="이 값은 이 컴퓨터의 설정 파일에만 저장되며, 외부로 전송되지 않습니다.",
+            required=True, parent=self,
+        )
+        outer.addWidget(self.key_field)
 
         self.show_checkbox = CheckBox("키 표시", self)
+        self.show_checkbox.setToolTip("서비스키를 평문으로 표시합니다")
         self.show_checkbox.stateChanged.connect(self._toggle_show)
-        layout.addWidget(self.show_checkbox)
-        layout.addStretch(1)
+        outer.addWidget(self.show_checkbox)
 
-        btn_row = QHBoxLayout()
-        btn_row.addStretch(1)
+        outer.addStretch(1)
+
         cancel_btn = PushButton("취소", self)
         cancel_btn.clicked.connect(self.close)
-        btn_row.addWidget(cancel_btn)
         save_btn = PrimaryPushButton("저장", self)
+        save_btn.setDefault(True)
         save_btn.clicked.connect(self._save)
-        btn_row.addWidget(save_btn)
-        layout.addLayout(btn_row)
+        outer.addWidget(uic.DialogFooter([cancel_btn, save_btn], parent=self))
+
+        self.setTabOrder(self.key_edit, self.show_checkbox)
+        self.setTabOrder(self.show_checkbox, cancel_btn)
+        self.setTabOrder(cancel_btn, save_btn)
 
         _bring_to_front(self)
 
@@ -920,6 +1265,8 @@ class SettingsDialog(QDialog):
         )
 
     def _save(self):
+        # 기존 검증 규칙 그대로: 빈 키도 저장을 막지 않는다(비워서 저장하면
+        # 서비스키를 지우는 셈이 되는 기존 동작 유지).
         config.set_service_key(self.key_edit.text().strip())
         self.on_change()
         toast(self.parent(), "success", "저장됨", "서비스키를 저장했습니다.")
@@ -1334,13 +1681,14 @@ class WeatherDutyApp(QMainWindow):
         layout.addWidget(self.forecast_scroll, 1)
 
     def _style_warning_banner(self, has_warning):
-        """특보 배너 톤 갱신. 특보가 있을 때만 danger로 강하게, 없으면 중립
-        surface_alt + 작은 success 점으로 조용하게(초록을 과하게 쓰지 않음)."""
+        """특보 배너 톤 갱신. 특보가 있을 때만 danger로 강하게, 없으면
+        success_soft 배경 + 작은 점 + 중립 텍스트로 조용하게(글자 자체는
+        success로 칠하지 않고 text_secondary를 써서 초록을 과하게 쓰지 않는다)."""
         c = theme.colors()
         if has_warning:
             bg, dot, text = c["danger_soft"], c["danger"], c["danger"]
         else:
-            bg, dot, text = c["surface_alt"], c["success"], c["text_secondary"]
+            bg, dot, text = c["success_soft"], c["success"], c["text_secondary"]
         self._warning_banner_frame.setStyleSheet(
             f"QFrame {{ background-color:{bg}; border-radius:{theme.RADIUS_PANEL}px; }}"
         )
@@ -1464,8 +1812,13 @@ class WeatherDutyApp(QMainWindow):
         self.summary_table.setColumnWidth(5, 118)
         self._summary_content_stack.addWidget(self.summary_table)
 
-        self._summary_empty_state = uic.EmptyState("불러오는 중…", " ", self._summary_content_stack)
+        self._summary_empty_state = uic.EmptyState("표시할 데이터가 없습니다", "", self._summary_content_stack)
         self._summary_content_stack.addWidget(self._summary_empty_state)
+
+        self._summary_loading_state = uic.LoadingState(
+            "기상 정보를 조회하고 있습니다.", self._summary_content_stack,
+        )
+        self._summary_content_stack.addWidget(self._summary_loading_state)
 
         layout.addWidget(self._summary_content_stack, 1)
 
@@ -1478,10 +1831,15 @@ class WeatherDutyApp(QMainWindow):
             f" border:none; padding:0 {theme.SPACE_3}px; }}"
         )
 
-    def _show_summary_empty_state(self, title, description):
+    def _show_summary_empty_state(self, title, description, tone="neutral", action_widget=None):
         self._summary_empty_state.set_title(title)
         self._summary_empty_state.set_description(description)
+        self._summary_empty_state.set_tone(tone)
+        self._summary_empty_state.set_action_widget(action_widget)
         self._summary_content_stack.setCurrentWidget(self._summary_empty_state)
+
+    def _show_summary_loading(self):
+        self._summary_content_stack.setCurrentWidget(self._summary_loading_state)
 
     def _show_summary_table(self):
         self._summary_content_stack.setCurrentWidget(self.summary_table)
@@ -1516,6 +1874,8 @@ class WeatherDutyApp(QMainWindow):
             self._render_summary(favorites)
         elif self.selected_region:
             self._render_region(self.selected_region)
+        else:
+            self._render_no_region_selected()
 
     # ---------- dialogs ----------
     def _open_region_manager(self):
@@ -1658,13 +2018,24 @@ class WeatherDutyApp(QMainWindow):
 
     # ---------- rendering: detail view ----------
     def _render_region(self, name):
+        self.region_name_label.setText(name)
+        self.region_name_label.setToolTip(name)
         report = self.reports.get(name)
         if not report:
-            self.region_name_label.setText(name)
-            self.region_name_label.setToolTip(name)
-            self.temp_label.setText("조회 중…")
+            # 이전에 선택했던 지역의 예보/오류/특보가 남아있지 않도록 비우고,
+            # "서비스키 미설정"과 "조회 중"을 구분해서 안내한다.
+            self.temp_label.setText("-℃")
+            self.rain_label.setText("-mm")
+            self.obs_time_label.setText("")
+            self._error_banner_frame.setVisible(False)
+            self._warning_banner_frame.setVisible(False)
+            if not config.get_service_key():
+                self._render_forecast_service_key_missing()
+            else:
+                self._render_forecast_loading(name)
             return
 
+        self._warning_banner_frame.setVisible(True)
         current = report.get("current") or {}
         temp = current.get("temp")
         rain = current.get("rain_1h")
@@ -1688,6 +2059,43 @@ class WeatherDutyApp(QMainWindow):
         self._style_warning_banner(has_warning=bool(warnings))
 
         self._render_forecast(name, report.get("forecast", []))
+
+    def _render_no_region_selected(self):
+        """즐겨찾기가 하나도 없어 선택된 지역이 없는 상태 - 이전에 봤던 지역의
+        예보가 화면에 남아 있지 않도록 Hero/배너/예보 영역을 모두 비운다."""
+        self.region_name_label.setText("즐겨찾기 지역을 선택하세요")
+        self.region_name_label.setToolTip("")
+        self.temp_label.setText("-℃")
+        self.rain_label.setText("-mm")
+        self.obs_time_label.setText("")
+        self._error_banner_frame.setVisible(False)
+        self._warning_banner_frame.setVisible(False)
+        _clear_layout(self.forecast_layout)
+        parent_widget = self.forecast_scroll.widget()
+        empty = uic.EmptyState(
+            "즐겨찾기 지역이 없습니다",
+            "왼쪽 즐겨찾기 편집에서 지역을 추가하면 예보를 볼 수 있습니다.",
+            parent_widget,
+        )
+        self.forecast_layout.addWidget(empty)
+
+    def _render_forecast_loading(self, region_name):
+        _clear_layout(self.forecast_layout)
+        parent_widget = self.forecast_scroll.widget()
+        loading = uic.LoadingState(f"{region_name} 날씨 정보를 조회하고 있습니다.", parent_widget)
+        self.forecast_layout.addWidget(loading)
+
+    def _render_forecast_service_key_missing(self):
+        _clear_layout(self.forecast_layout)
+        parent_widget = self.forecast_scroll.widget()
+        open_settings_btn = PrimaryPushButton("설정 열기", parent_widget)
+        open_settings_btn.clicked.connect(self._open_settings)
+        empty = uic.EmptyState(
+            "서비스키 설정이 필요합니다.",
+            "설정에서 기상청 API 서비스키를 등록하면 날씨 정보를 조회할 수 있습니다.",
+            parent_widget, tone="warning", action_widget=open_settings_btn,
+        )
+        self.forecast_layout.addWidget(empty)
 
     def _render_forecast(self, region_name, days):
         _clear_layout(self.forecast_layout)
@@ -1791,14 +2199,31 @@ class WeatherDutyApp(QMainWindow):
             )
             return
 
+        if not config.get_service_key():
+            open_settings_btn = PrimaryPushButton("설정 열기", self._summary_content_stack)
+            open_settings_btn.clicked.connect(self._open_settings)
+            self._show_summary_empty_state(
+                "서비스키 설정이 필요합니다.",
+                "설정에서 기상청 API 서비스키를 등록하면 종합 현황을 볼 수 있습니다.",
+                tone="warning", action_widget=open_settings_btn,
+            )
+            return
+
         all_dates = self._all_summary_dates(favorites)
         self._update_summary_date_selector(all_dates)
 
         if not all_dates:
-            self._show_summary_empty_state(
-                "표시할 데이터가 없습니다.",
-                "조회 중이거나 아직 예보 데이터가 없습니다. 잠시 후 다시 확인해 주세요.",
-            )
+            # 서비스키는 있지만 즐겨찾기 중 아직 응답을 못 받은 게 있으면
+            # "조회 중", 전부 응답은 왔는데 예보 날짜가 없으면 진짜 "데이터
+            # 없음"으로 구분한다(새 네트워크 재시도 로직을 만들지 않고,
+            # 이미 갖고 있는 self.reports 상태만으로 구분).
+            if any(self.reports.get(r) is None for r in favorites):
+                self._show_summary_loading()
+            else:
+                self._show_summary_empty_state(
+                    "표시할 데이터가 없습니다.",
+                    "예보 데이터가 없습니다. 새로고침 버튼으로 다시 시도해 주세요.",
+                )
             return
 
         self._show_summary_table()
