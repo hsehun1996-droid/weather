@@ -462,23 +462,37 @@ def get_mid_term_forecast(service_key, reg_id_land, reg_id_ta, now=None):
 _WARN_TEXT_FIELDS = ("t1", "t2", "t3", "t4", "t6", "t7", "other", "warFc")
 
 
-def get_active_warnings(service_key, stn_id, now=None):
+def get_active_warnings(service_key, stn_id, now=None, lookback_days=5):
     """현재 발효 중인 기상특보 목록(통보문 텍스트)을 반환.
     getWthrWrnMsg의 stnId는 관측지점번호가 아니라 발표 관서(지방기상청) 코드다.
     한 지방기상청은 자기 관할 구역 특보만 내려주므로(예: stnId=156 광주지방기상청
     응답에는 광주·전남 특보만 나옴), 호출부가 지역에 맞는 stnId를 골라 넘겨야
     한다(regions.py의 warn_stn_id). 응답은 특보구역별로 나뉘지 않고 지역명이
     포함된 자유 텍스트(t1~t7 등)로 내려오므로, 그 관서 관할 안에서 시군구 단위
-    매칭은 호출부가 키워드 포함 여부로 판단한다."""
+    매칭은 호출부가 키워드 포함 여부로 판단한다.
+
+    통보문은 상태가 바뀔 때만(신규/상향/하향/해제) 새로 발표되고 "변화 없음"인
+    날은 재발표되지 않는다. fromTmFc/toTmFc를 당일 하루로만 좁히면, 특보가 이미
+    며칠째 그대로 발효 중이어서 오늘 새로 발표된 통보문이 없는 경우 아예 아무것도
+    못 받아 "발효 중인 특보 없음"으로 잘못 표시된다. 그래서 최근 며칠(lookback_days)
+    범위로 넓게 조회한 뒤, 그중 가장 최근에 발표된 통보문(들, tmFc 최댓값)만 현재
+    상태로 채택한다 - t6 필드는 그 시점 기준 "현재 발효 중인 특보 전체"를 담고
+    있으므로 가장 최근 통보문 하나면 충분하다."""
     now = now or datetime.datetime.now()
     today = now.strftime("%Y%m%d")
+    from_date = (now - datetime.timedelta(days=lookback_days)).strftime("%Y%m%d")
     items = _get(
         f"{BASE_WARN}/getWthrWrnMsg",
         service_key,
-        {"numOfRows": 100, "pageNo": 1, "stnId": stn_id, "fromTmFc": today, "toTmFc": today},
+        {"numOfRows": 100, "pageNo": 1, "stnId": stn_id, "fromTmFc": from_date, "toTmFc": today},
     )
+    if not items:
+        return []
+    latest_tm_fc = max((it.get("tmFc") or "" for it in items), default="")
+    latest_items = [it for it in items if it.get("tmFc") == latest_tm_fc] if latest_tm_fc else items
+
     warnings = []
-    for it in items:
+    for it in latest_items:
         text = " ".join(str(it.get(k, "")) for k in _WARN_TEXT_FIELDS if it.get(k))
         warnings.append({"raw": it, "text": text})
     return warnings
