@@ -9,22 +9,23 @@
 import re
 import threading
 
-from PySide6.QtCore import Qt, QObject, QTimer, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QObject, QSize, QTimer, Signal
+from PySide6.QtGui import QFont, QFontMetrics, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QMainWindow, QFrame, QLabel, QVBoxLayout, QHBoxLayout,
-    QDialog, QMessageBox, QInputDialog, QStackedWidget, QTableWidgetItem,
+    QDialog, QMessageBox, QInputDialog, QSplitter, QStackedWidget, QTableWidgetItem,
     QAbstractItemView, QAbstractScrollArea, QListWidgetItem,
 )
 
 from qfluentwidgets import (
-    PushButton, PrimaryPushButton, TransparentPushButton, ToolButton,
+    PushButton, PrimaryPushButton, TransparentPushButton,
     LineEdit, SearchLineEdit, ComboBox, CheckBox, TableWidget, ListWidget,
     ScrollArea, CardWidget, SegmentedWidget, InfoBar, InfoBarPosition,
     FluentIcon, SystemThemeListener,
 )
 
 from . import config, kma_client, regions, theme
+from . import ui_components as uic
 
 _PCP_NUMBER_RE = re.compile(r"([\d.]+)")
 
@@ -106,6 +107,31 @@ def toast(parent, kind, title, content):
         isClosable=True, duration=2500, position=InfoBarPosition.TOP,
         parent=parent,
     )
+
+
+def _dot_icon(color_hex, diameter=8):
+    """즐겨찾기 목록에서 "조회 중" 표시용 작은 점 아이콘. 항목의 텍스트나
+    UserRole은 그대로 두고, 아이콘 하나로만 진행 상태를 곁들인다(반복 애니메이션 없음)."""
+    pixmap = QPixmap(diameter, diameter)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(_qcolor(color_hex))
+    painter.drawEllipse(0, 0, diameter, diameter)
+    painter.end()
+    return QIcon(pixmap)
+
+
+_STATUS_PILL_LABELS = ["대기", "조회 중", "갱신 완료", "일부 오류", "서비스키 필요"]
+
+
+def _status_pill_min_width():
+    """상태 pill 텍스트가 "조회 중" <-> "서비스키 필요"처럼 바뀔 때 헤더 폭이
+    흔들리지 않도록, 나올 수 있는 문구 중 가장 넓은 것 기준으로 최소 너비를 잡는다."""
+    metrics = QFontMetrics(theme.font_role("micro"))
+    widest = max(metrics.horizontalAdvance(label) for label in _STATUS_PILL_LABELS)
+    return widest + theme.SPACE_3 * 2 + theme.SPACE_3
 
 
 class ClickableFrame(QFrame):
@@ -895,8 +921,8 @@ class WeatherDutyApp(QMainWindow):
         central = QWidget(self)
         self.setCentralWidget(central)
         self.root_layout = QVBoxLayout(central)
-        self.root_layout.setContentsMargins(16, 14, 16, 16)
-        self.root_layout.setSpacing(6)
+        self.root_layout.setContentsMargins(0, 0, 0, 0)
+        self.root_layout.setSpacing(0)
 
         self._build_toolbar()
         self._build_layout()
@@ -924,8 +950,8 @@ class WeatherDutyApp(QMainWindow):
         central = QWidget(self)
         self.setCentralWidget(central)
         self.root_layout = QVBoxLayout(central)
-        self.root_layout.setContentsMargins(16, 14, 16, 16)
-        self.root_layout.setSpacing(6)
+        self.root_layout.setContentsMargins(0, 0, 0, 0)
+        self.root_layout.setSpacing(0)
         self._build_toolbar()
         self._build_layout()
         self._apply_window_style()
@@ -936,72 +962,180 @@ class WeatherDutyApp(QMainWindow):
 
     # ---------- layout ----------
     def _build_toolbar(self):
+        """상단 헤더: 왼쪽 제목/부제, 가운데 화면 전환, 오른쪽 상태·새로고침·설정.
+        즐겨찾기 편집/지사 관리 버튼은 각각 사이드바 헤더와 종합보기 화면
+        제목으로 옮겼다(콜백은 그대로 유지, _open_region_manager/_open_branch_manager)."""
         c = theme.colors()
-        toolbar = QWidget(self)
-        toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        header = QWidget(self)
+        header.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        header.setFixedHeight(theme.HEADER_HEIGHT)
+        header.setStyleSheet(f"background-color:{c['background']};")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(
+            theme.APP_CONTENT_MARGIN, 0, theme.APP_CONTENT_MARGIN, 0
+        )
+        header_layout.setSpacing(theme.SPACE_4)
 
-        title = QLabel("폭염·풍수해·제설 근무 날씨 모니터", toolbar)
-        title.setFont(self.font_title)
-        title.setStyleSheet(qss(color=c["text"]))
-        toolbar_layout.addWidget(title)
-        toolbar_layout.addStretch(1)
+        title_col = QVBoxLayout()
+        title_col.setContentsMargins(0, 0, 0, 0)
+        title_col.setSpacing(0)
+        title_label = QLabel("기상 근무 모니터", header)
+        title_label.setFont(theme.font(22, QFont.Weight.DemiBold))
+        title_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent;")
+        title_col.addWidget(title_label)
+        subtitle_label = QLabel("폭염 · 풍수해 · 제설", header)
+        subtitle_label.setFont(theme.font_role("caption"))
+        subtitle_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
+        title_col.addWidget(subtitle_label)
+        header_layout.addLayout(title_col)
 
-        self.status_label = QLabel("", toolbar)
-        self.status_label.setFont(self.font_small)
-        self.status_label.setStyleSheet(qss(color=c["subtext"]))
-        toolbar_layout.addWidget(self.status_label)
+        header_layout.addStretch(1)
 
-        refresh_btn = PushButton("새로고침", toolbar, FluentIcon.SYNC)
-        refresh_btn.clicked.connect(self.refresh_all)
-        toolbar_layout.addWidget(refresh_btn)
-
-        self.view_seg = SegmentedWidget(toolbar)
+        # SegmentedWidget(Pivot) 내부 레이아웃은 QLayout.SetMinimumSize 제약을 써서
+        # 위젯 자체에 setMinimumWidth를 걸어도 다음 레이아웃 패스에서 콘텐츠 기준
+        # 폭으로 되돌려버린다. 그래서 작은 창에서 폭이 눌리지 않도록, 최소 너비는
+        # 감싸는 빈 컨테이너에 걸고 SegmentedWidget은 그 안에서 가운데 놓는다.
+        view_seg_wrap = QWidget(header)
+        view_seg_wrap.setMinimumWidth(240)
+        view_seg_wrap_layout = QHBoxLayout(view_seg_wrap)
+        view_seg_wrap_layout.setContentsMargins(0, 0, 0, 0)
+        view_seg_wrap_layout.addStretch(1)
+        self.view_seg = SegmentedWidget(view_seg_wrap)
         self.view_seg.addItem("detail", "지역별 상세", onClick=lambda: self._set_view_mode("detail"))
         self.view_seg.addItem("summary", "즐겨찾기 종합", onClick=lambda: self._set_view_mode("summary"))
         self.view_seg.setCurrentItem(self.view_mode)
-        toolbar_layout.addWidget(self.view_seg)
+        view_seg_wrap_layout.addWidget(self.view_seg)
+        view_seg_wrap_layout.addStretch(1)
+        header_layout.addWidget(view_seg_wrap)
 
-        region_btn = PushButton("즐겨찾기 편집", toolbar, FluentIcon.EDIT)
-        region_btn.clicked.connect(self._open_region_manager)
-        toolbar_layout.addWidget(region_btn)
+        header_layout.addStretch(1)
 
-        branch_btn = PushButton("지사 관리", toolbar, FluentIcon.PEOPLE)
-        branch_btn.clicked.connect(self._open_branch_manager)
-        toolbar_layout.addWidget(branch_btn)
+        self.status_label = uic.StatusPill("대기", tone="neutral", parent=header)
+        self.status_label.setMinimumWidth(_status_pill_min_width())
+        header_layout.addWidget(self.status_label)
 
-        settings_btn = ToolButton(FluentIcon.SETTING, toolbar)
+        refresh_btn = PushButton("새로고침", header, FluentIcon.SYNC)
+        refresh_btn.setFixedHeight(theme.CONTROL_HEIGHT_DEFAULT)
+        refresh_btn.setToolTip("새로고침")
+        refresh_btn.setAccessibleName("새로고침")
+        refresh_btn.clicked.connect(self.refresh_all)
+        header_layout.addWidget(refresh_btn)
+
+        settings_btn = uic.IconActionButton(FluentIcon.SETTING, tooltip="설정", parent=header)
+        settings_btn.setAccessibleName("설정")
         settings_btn.clicked.connect(self._open_settings)
-        toolbar_layout.addWidget(settings_btn)
+        header_layout.addWidget(settings_btn)
 
-        self.root_layout.addWidget(toolbar)
+        self.root_layout.addWidget(header)
+
+        header_divider = QFrame(self)
+        header_divider.setFixedHeight(1)
+        header_divider.setStyleSheet(f"background-color:{c['divider']};")
+        self.root_layout.addWidget(header_divider)
+
+    def _build_sidebar(self, parent):
+        """평평한 split-view 왼쪽 패널: 제목 + 즐겨찾기 편집 아이콘 버튼 헤더,
+        그 아래 즐겨찾기 목록(비어 있으면 EmptyState)."""
+        c = theme.colors()
+        sidebar = QWidget(parent)
+        sidebar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        sidebar.setStyleSheet(f"background-color:{c['surface']};")
+        sidebar.setMinimumWidth(theme.SIDEBAR_MIN_WIDTH)
+        sidebar.setMaximumWidth(theme.SIDEBAR_MAX_WIDTH)
+
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(
+            theme.SPACE_4, theme.SPACE_4, theme.SPACE_4, theme.SPACE_4
+        )
+        sidebar_layout.setSpacing(theme.SPACE_3)
+
+        header_row = QHBoxLayout()
+        header_row.setSpacing(theme.SPACE_2)
+        sidebar_title = QLabel("즐겨찾기 지역", sidebar)
+        sidebar_title.setFont(theme.font_role("card_title"))
+        sidebar_title.setStyleSheet(f"color:{c['text_primary']}; background:transparent;")
+        header_row.addWidget(sidebar_title)
+        header_row.addStretch(1)
+        edit_btn = uic.IconActionButton(FluentIcon.EDIT, tooltip="즐겨찾기 편집", parent=sidebar)
+        edit_btn.setAccessibleName("즐겨찾기 편집")
+        edit_btn.clicked.connect(self._open_region_manager)
+        header_row.addWidget(edit_btn)
+        sidebar_layout.addLayout(header_row)
+
+        self._favorites_stack = QStackedWidget(sidebar)
+
+        self.favorites_list = ListWidget(self._favorites_stack)
+        self.favorites_list.setFrameShape(QFrame.Shape.NoFrame)
+        self.favorites_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.favorites_list.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.favorites_list.setUniformItemSizes(True)
+        self.favorites_list.itemClicked.connect(self._on_favorite_item_clicked)
+        self._style_favorites_list()
+        self._favorites_stack.addWidget(self.favorites_list)
+
+        self._sidebar_empty_state = uic.EmptyState(
+            "즐겨찾기 지역이 없습니다",
+            "편집 버튼에서 지역을 추가할 수 있습니다.",
+            self._favorites_stack,
+        )
+        self._favorites_stack.addWidget(self._sidebar_empty_state)
+
+        sidebar_layout.addWidget(self._favorites_stack, 1)
+
+        return sidebar
+
+    def _style_favorites_list(self):
+        c = theme.colors()
+        self.favorites_list.setStyleSheet(f"""
+            QListWidget {{
+                background: transparent;
+                border: none;
+                outline: none;
+            }}
+            QListWidget::item {{
+                padding: 0px {theme.SPACE_3}px;
+                border-radius: {theme.RADIUS_CONTROL}px;
+                color: {c['text_primary']};
+                background: transparent;
+            }}
+            QListWidget::item:hover {{
+                background-color: {c['surface_hover']};
+            }}
+            QListWidget::item:selected {{
+                background-color: {c['surface_selected']};
+                color: {c['text_primary']};
+                font-weight: 500;
+            }}
+        """)
 
     def _build_layout(self):
         c = theme.colors()
-        body = QWidget(self)
-        body_layout = QHBoxLayout(body)
-        body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(16)
-        self.root_layout.addWidget(body, 1)
+        body_container = QWidget(self)
+        body_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        body_container.setStyleSheet(f"background-color:{c['background']};")
+        body_layout = QVBoxLayout(body_container)
+        body_layout.setContentsMargins(
+            theme.SPACE_4, theme.SPACE_4, theme.SPACE_4, theme.SPACE_4
+        )
+        self.root_layout.addWidget(body_container, 1)
 
-        sidebar = make_card(body, c, radius=16)
-        sidebar.setFixedWidth(250)
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(16, 16, 8, 8)
-        body_layout.addWidget(sidebar)
+        splitter = QSplitter(Qt.Orientation.Horizontal, body_container)
+        splitter.setHandleWidth(theme.SPACE_1)
+        splitter.setChildrenCollapsible(False)
+        splitter.setStyleSheet(f"QSplitter::handle {{ background-color:{c['divider']}; }}")
+        body_layout.addWidget(splitter)
 
-        sidebar_hdr = QLabel("즐겨찾기 지역", sidebar)
-        sidebar_hdr.setFont(self.font_body)
-        sidebar_hdr.setStyleSheet(qss(color=c["subtext"]))
-        sidebar_layout.addWidget(sidebar_hdr)
+        sidebar = self._build_sidebar(splitter)
+        splitter.addWidget(sidebar)
 
-        self.favorites_list = ListWidget(sidebar)
-        self.favorites_list.setStyleSheet("QListWidget { background: transparent; border: none; }")
-        self.favorites_list.itemClicked.connect(self._on_favorite_item_clicked)
-        sidebar_layout.addWidget(self.favorites_list, 1)
+        self.stack = QStackedWidget(splitter)
+        splitter.addWidget(self.stack)
 
-        self.stack = QStackedWidget(body)
-        body_layout.addWidget(self.stack, 1)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes(
+            [theme.SIDEBAR_DEFAULT_WIDTH, max(self.width() - theme.SIDEBAR_DEFAULT_WIDTH, 400)]
+        )
 
         self.detail_page = QWidget(self.stack)
         self._build_detail_widgets(self.detail_page)
@@ -1081,6 +1215,13 @@ class WeatherDutyApp(QMainWindow):
         layout = QVBoxLayout(parent)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
+
+        branch_btn = PushButton("지사 관리", parent, FluentIcon.PEOPLE)
+        branch_btn.setToolTip("지사 관리")
+        branch_btn.setAccessibleName("지사 관리")
+        branch_btn.clicked.connect(self._open_branch_manager)
+        summary_header = uic.SectionHeader("즐겨찾기 종합", action_widget=branch_btn, parent=parent)
+        layout.addWidget(summary_header)
 
         date_bar = make_card(parent, c, radius=16)
         date_bar_layout = QHBoxLayout(date_bar)
@@ -1175,13 +1316,13 @@ class WeatherDutyApp(QMainWindow):
     def refresh_all(self):
         service_key = config.get_service_key()
         if not service_key:
-            self.status_label.setText("서비스키 미설정 - '설정'에서 입력하세요")
+            self.status_label.set_state(text="서비스키 필요", tone="warning")
             self.reports = {}
             self._refresh_current_view()
             return
 
         favorites = config.get_favorites()
-        self.status_label.setText("조회 중...")
+        self.status_label.set_state(text="조회 중", tone="info")
         self._fetch_seq += 1
         seq = self._fetch_seq
         for name in favorites:
@@ -1224,7 +1365,11 @@ class WeatherDutyApp(QMainWindow):
     def _apply_fetch_result(self, seq, reports, favorites):
         if seq != self._fetch_seq:
             return  # 새 새로고침이 이미 시작돼 이 결과는 낡은 것 -> 버린다
-        self.status_label.setText("갱신 완료")
+        has_errors = any(report.get("errors") for report in reports.values())
+        if has_errors:
+            self.status_label.set_state(text="일부 오류", tone="warning")
+        else:
+            self.status_label.set_state(text="갱신 완료", tone="success")
         self.reports.update(reports)
         if favorites and (self.selected_region not in self.reports):
             self.selected_region = favorites[0]
@@ -1252,17 +1397,20 @@ class WeatherDutyApp(QMainWindow):
         self.favorites_list.clear()
 
         if not favorites:
-            item = QListWidgetItem("즐겨찾기가 비어 있습니다.\n'즐겨찾기 편집'에서 추가하세요.")
-            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable & ~Qt.ItemFlag.ItemIsEnabled)
-            item.setForeground(_qcolor(c["subtext"]))
-            self.favorites_list.addItem(item)
+            self._favorites_stack.setCurrentWidget(self._sidebar_empty_state)
             return
+        self._favorites_stack.setCurrentWidget(self.favorites_list)
 
         for name in favorites:
             is_loading = name not in self.reports
-            item = QListWidgetItem(("조회 중…  " + name) if is_loading else name)
+            # 텍스트는 지역명 그대로 두고("조회 중… " 접두어 없음), 진행 상태는
+            # 아이콘 점 하나로만 곁들인다 - UserRole도 그대로 지역명을 담는다.
+            item = QListWidgetItem(name)
             item.setFont(self.font_body)
             item.setData(Qt.ItemDataRole.UserRole, name)
+            item.setToolTip(name)
+            item.setSizeHint(QSize(0, 40))
+            item.setIcon(_dot_icon(c["info"]) if is_loading else QIcon())
             self.favorites_list.addItem(item)
             if name == self.selected_region:
                 self.favorites_list.setCurrentItem(item)
