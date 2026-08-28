@@ -192,6 +192,32 @@ class TestGetActiveWarnings(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertIn("상주시", result[0]["text"])
 
+    @patch("weather_duty.kma_client._SESSION.get")
+    def test_widens_lookback_and_keeps_only_latest_bulletin(self, mock_get):
+        # 특보가 며칠째 그대로 발효 중이면 "오늘" 새로 발표된 통보문이 없을 수
+        # 있다 - 최근 며칠을 조회해서 그중 가장 최근(tmFc 최댓값) 통보문만
+        # 채택해야 하고, 더 과거의(대체된) 통보문은 결과에서 빠져야 한다.
+        mock_get.return_value = _mock_response([
+            {"tmFc": "202608250500", "t6": "이미 해제된 옛 폭염주의보"},
+            {"tmFc": "202608270500", "t6": "폭염주의보 경상북도 상주시 발효"},
+        ])
+        result = kma_client.get_active_warnings(
+            "dummy-key", "143", now=datetime.datetime(2026, 8, 27, 15, 0)
+        )
+        called_url = mock_get.call_args[0][0]
+        self.assertIn("fromTmFc=20260822", called_url)
+        self.assertIn("toTmFc=20260827", called_url)
+        self.assertEqual(len(result), 1)
+        self.assertIn("상주시", result[0]["text"])
+
+    @patch("weather_duty.kma_client._SESSION.get")
+    def test_no_bulletins_returns_empty(self, mock_get):
+        mock_get.return_value = _mock_response([])
+        result = kma_client.get_active_warnings(
+            "dummy-key", "143", now=datetime.datetime(2026, 8, 27, 15, 0)
+        )
+        self.assertEqual(result, [])
+
 
 class TestErrorHandling(unittest.TestCase):
     @patch("weather_duty.kma_client._SESSION.get")
