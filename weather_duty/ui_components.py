@@ -260,24 +260,31 @@ class EmptyState(QWidget):
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._title_label)
 
-        self._desc_label = None
-        if description:
-            self._desc_label = QLabel(description, self)
-            self._desc_label.setFont(theme.font_role("caption"))
-            self._desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._desc_label.setWordWrap(True)
-            layout.addWidget(self._desc_label)
+        # description 없이 만들어져도 나중에 set_description()으로 채울 수 있도록
+        # 라벨은 항상 만들어 두고, 텍스트가 비어 있을 때만 숨긴다.
+        self._desc_label = QLabel(description, self)
+        self._desc_label.setFont(theme.font_role("caption"))
+        self._desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._desc_label.setWordWrap(True)
+        self._desc_label.setVisible(bool(description))
+        layout.addWidget(self._desc_label)
 
         layout.addStretch(1)
 
         self._refresh_style()
         theme.bind_theme_change(self, self._refresh_style)
 
+    def set_title(self, title):
+        self._title_label.setText(title)
+
+    def set_description(self, description):
+        self._desc_label.setText(description)
+        self._desc_label.setVisible(bool(description))
+
     def _refresh_style(self):
         c = theme.colors()
         self._title_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
-        if self._desc_label is not None:
-            self._desc_label.setStyleSheet(f"color:{c['text_tertiary']}; background:transparent;")
+        self._desc_label.setStyleSheet(f"color:{c['text_tertiary']}; background:transparent;")
 
 
 class IconActionButton(TransparentToolButton):

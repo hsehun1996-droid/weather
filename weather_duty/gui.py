@@ -13,15 +13,15 @@ import threading
 from PySide6.QtCore import Qt, QObject, QSize, QTimer, Signal
 from PySide6.QtGui import QFont, QFontMetrics, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QWidget, QMainWindow, QFrame, QLabel, QSizePolicy, QVBoxLayout, QHBoxLayout,
+    QWidget, QMainWindow, QFrame, QHeaderView, QLabel, QSizePolicy, QVBoxLayout, QHBoxLayout,
     QDialog, QMessageBox, QInputDialog, QSplitter, QStackedWidget, QTableWidgetItem,
-    QAbstractItemView, QAbstractScrollArea, QListWidgetItem,
+    QAbstractItemView, QListWidgetItem,
 )
 
 from qfluentwidgets import (
     PushButton, PrimaryPushButton, TransparentPushButton,
     LineEdit, SearchLineEdit, ComboBox, CheckBox, TableWidget, ListWidget,
-    ScrollArea, CardWidget, SegmentedWidget, InfoBar, InfoBarPosition,
+    ScrollArea, SingleDirectionScrollArea, CardWidget, SegmentedWidget, InfoBar, InfoBarPosition,
     FluentIcon, SystemThemeListener,
 )
 
@@ -109,6 +109,29 @@ def _forecast_row_tooltip(day):
     if day.get("hourly"):
         return "더블클릭하여 시간별 상세보기"
     return "더블클릭하여 상세 정보 보기"
+
+
+def _summary_date_chip_text(date_str, today_str=None):
+    """종합보기 날짜 칩에 쓸 짧은 표시 문구만 만든다 - routeKey/date_str 값
+    자체(선택 상태 판정, _on_summary_date_selected에 넘기는 값)는 그대로 둔다.
+    "오늘 08/28" / "어제 08/27" / "08/29 토" 형태."""
+    if not date_str or len(date_str) != 8:
+        return date_str or "-"
+    try:
+        d = datetime.date(int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8]))
+    except ValueError:
+        return f"{date_str[4:6]}/{date_str[6:8]}"
+    mmdd = f"{date_str[4:6]}/{date_str[6:8]}"
+    if today_str:
+        if date_str == today_str:
+            return f"오늘 {mmdd}"
+        try:
+            today_d = datetime.date(int(today_str[:4]), int(today_str[4:6]), int(today_str[6:8]))
+            if (today_d - d).days == 1:
+                return f"어제 {mmdd}"
+        except ValueError:
+            pass
+    return f"{mmdd} {_WEEKDAY_KO[d.weekday()]}"
 
 
 def qss(color=None, bg=None, radius=None, pad=None, border=None, weight=None):
@@ -1325,51 +1348,143 @@ class WeatherDutyApp(QMainWindow):
         self.warning_banner.setStyleSheet(f"color:{text}; background:transparent;")
 
     def _build_summary_widgets(self, parent):
+        """즐겨찾기 종합보기: 제목/지사 관리 버튼 -> 가로 스크롤 날짜 선택 ->
+        (지사 미설정/일부 오류 안내 배너, 평소엔 숨김) -> 종합표(또는 빈 상태)."""
         c = theme.colors()
         layout = QVBoxLayout(parent)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(theme.SPACE_4)
 
+        # ---------- 상단: 제목(좌) + 지사 관리 버튼(우) ----------
         branch_btn = PushButton("지사 관리", parent, FluentIcon.PEOPLE)
         branch_btn.setToolTip("지사 관리")
         branch_btn.setAccessibleName("지사 관리")
         branch_btn.clicked.connect(self._open_branch_manager)
-        summary_header = uic.SectionHeader("즐겨찾기 종합", action_widget=branch_btn, parent=parent)
+        summary_header = uic.SectionHeader(
+            "지사별 종합 현황",
+            subtitle="지사명을 클릭하면 날짜·시간대별 누적강수량을 관할 지역별로 비교할 수 있습니다.",
+            action_widget=branch_btn,
+            parent=parent,
+        )
         layout.addWidget(summary_header)
 
-        date_bar = make_card(parent, c, radius=16)
+        # ---------- 날짜 선택: 가로 스크롤 컨테이너 안에 기존 SegmentedWidget 배치 ----------
+        # (날짜가 많아져도 항목이 압축되지 않게 - SegmentedWidget 자체 로직 등은
+        # 그대로 두고, 담는 컨테이너만 가로 스크롤 가능하게 바꾼다)
+        date_bar = QFrame(parent)
+        date_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        date_bar.setStyleSheet(
+            f"QFrame {{ background-color:{c['surface']}; border:1px solid {c['border_subtle']};"
+            f" border-radius:{theme.RADIUS_PANEL}px; }}"
+        )
         date_bar_layout = QHBoxLayout(date_bar)
-        date_bar_layout.setContentsMargins(16, 12, 16, 12)
-        date_hdr = QLabel("날짜 선택", date_bar)
-        date_hdr.setFont(self.font_body)
-        date_hdr.setStyleSheet(qss(color=c["subtext"]))
+        date_bar_layout.setContentsMargins(theme.SPACE_4, theme.SPACE_2, theme.SPACE_4, theme.SPACE_2)
+        date_bar_layout.setSpacing(theme.SPACE_3)
+        date_hdr = QLabel("날짜", date_bar)
+        date_hdr.setFont(theme.font_role("label"))
+        date_hdr.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
         date_bar_layout.addWidget(date_hdr)
+
         self.summary_date_selector = SegmentedWidget(date_bar)
-        date_bar_layout.addWidget(self.summary_date_selector, 1)
+        self.summary_date_selector.setStyleSheet("background:transparent;")
+        date_scroll = SingleDirectionScrollArea(date_bar, orient=Qt.Orientation.Horizontal)
+        date_scroll.setWidget(self.summary_date_selector)
+        date_scroll.setWidgetResizable(True)
+        date_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        date_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        date_scroll.setFixedHeight(theme.CONTROL_HEIGHT_LARGE)
+        date_scroll.setStyleSheet("QScrollArea { border:none; background:transparent; }")
+        date_bar_layout.addWidget(date_scroll, 1)
         layout.addWidget(date_bar)
 
-        self.summary_hint = QLabel(
-            "※ 지사명을 클릭하면 원하는 날짜·시간대의 누적강수량을 관할 지역별로 비교할 수 있습니다.",
-            parent,
+        # ---------- 비차단 안내 배너: 지사 미설정 / 일부 오류(평소엔 숨김) ----------
+        self._summary_no_branch_banner = uic.InlineBanner(
+            "등록된 지사가 없어 전체 지역이 \"미분류\"로 표시됩니다. 지사 관리에서 지사를 추가할 수 있습니다.",
+            level="info", parent=parent,
         )
-        self.summary_hint.setFont(self.font_small)
-        self.summary_hint.setStyleSheet(qss(color=c["subtext"]))
-        layout.addWidget(self.summary_hint)
+        self._summary_no_branch_banner.setVisible(False)
+        layout.addWidget(self._summary_no_branch_banner)
 
-        self.summary_table = TableWidget(parent)
-        self.summary_table.setColumnCount(7)
-        self.summary_table.setHorizontalHeaderLabels(
-            ["지사", "지역", "최저/최고", "체감 최저/최고", "강수확률", "강수량(00~24시 누적)", "특보"]
+        self._summary_error_banner = uic.InlineBanner(
+            "일부 지역의 데이터를 불러오지 못했습니다. 지역별 상세보기에서 자세한 오류를 확인할 수 있습니다.",
+            level="danger", parent=parent,
         )
+        self._summary_error_banner.setVisible(False)
+        layout.addWidget(self._summary_error_banner)
+
+        # ---------- 종합표 / 빈 상태 ----------
+        # self.summary_table 자체는 항상 존재해야 하므로(요구 속성), 위젯을
+        # 갈아끼우지 않고 QStackedWidget으로 표와 빈 상태 사이만 전환한다.
+        self._summary_content_stack = QStackedWidget(parent)
+
+        self.summary_table = TableWidget(self._summary_content_stack)
+        self.summary_table.setColumnCount(7)
+        # "체감 최저/최고"·"강수량(00~24시 누적)" 전체 문구를 헤더에 그대로 쓰면 그
+        # 열만 지나치게 넓어져 좁은 화면에서 지역명 열이 짓눌린다(960px에서 실측)
+        # - 헤더는 짧게 쓰고 전체 의미는 툴팁으로 보완한다(데이터·정렬 기준은 그대로).
+        self.summary_table.setHorizontalHeaderLabels(
+            ["지사", "지역", "최저/최고", "체감", "강수확률", "강수량", "특보"]
+        )
+        self.summary_table.horizontalHeaderItem(3).setToolTip("체감 최저/최고")
+        self.summary_table.horizontalHeaderItem(5).setToolTip("강수량 (00~24시 누적)")
         self.summary_table.verticalHeader().hide()
         self.summary_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.summary_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.summary_table.setBorderRadius(16)
+        self.summary_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.summary_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.summary_table.setBorderRadius(theme.RADIUS_CARD)
+        self.summary_table.verticalHeader().setDefaultSectionSize(theme.TABLE_ROW_HEIGHT)
+        self.summary_table.horizontalHeader().setFixedHeight(theme.TABLE_HEADER_HEIGHT)
         self.summary_table.horizontalHeader().setStretchLastSection(False)
-        self.summary_table.setSizeAdjustPolicy(QAbstractScrollArea.SizeAdjustPolicy.AdjustToContents)
+        # 기본 word wrap(true)이 켜진 채로 셀 폭이 좁으면 긴 지사명이 여러 줄로
+        # 쪼개져 행 높이를 넘치는데, elide는 word wrap이 꺼져 있어야 적용되므로
+        # 반드시 함께 꺼서 "한 줄 + ... + 툴팁"으로만 넘치게 한다.
+        self.summary_table.setWordWrap(False)
+        self.summary_table.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.summary_table.cellDoubleClicked.connect(self._on_summary_cell_double_clicked)
         self.summary_table.cellClicked.connect(self._on_summary_cell_clicked)
-        layout.addWidget(self.summary_table, 1)
+        self._style_summary_table_header()
+
+        # resizeColumnsToContents() 한 번으로 퉁치지 않고, 열 성격에 맞게 각각
+        # 정책을 명시한다 - 지사/강수량은 span·긴 문구 때문에 내용 기준 자동
+        # 계산이 부정확해질 수 있어 Interactive+초기폭으로, 지역명만 남는 폭을
+        # 가져가도록 Stretch, 나머지 숫자열은 ResizeToContents로 짧게 맞춘다.
+        header = self.summary_table.horizontalHeader()
+        # Stretch 열(지역)은 다른 열들의 폭 합이 뷰포트를 넘으면 0까지 눌릴 수 있어
+        # (960px 좁은 화면에서 지역명이 통째로 사라지는 문제로 실측됨),
+        # 모든 열에 최소 폭을 강제해 그 이하로는 좁아지지 않고 가로 스크롤로 넘어가게 한다.
+        header.setMinimumSectionSize(64)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        self.summary_table.setColumnWidth(0, 100)
+        self.summary_table.setColumnWidth(5, 118)
+        self._summary_content_stack.addWidget(self.summary_table)
+
+        self._summary_empty_state = uic.EmptyState("불러오는 중…", " ", self._summary_content_stack)
+        self._summary_content_stack.addWidget(self._summary_empty_state)
+
+        layout.addWidget(self._summary_content_stack, 1)
+
+    def _style_summary_table_header(self):
+        c = theme.colors()
+        header = self.summary_table.horizontalHeader()
+        header.setFont(theme.font_role("label"))
+        header.setStyleSheet(
+            f"QHeaderView::section {{ background-color:{c['surface_alt']}; color:{c['text_primary']};"
+            f" border:none; padding:0 {theme.SPACE_3}px; }}"
+        )
+
+    def _show_summary_empty_state(self, title, description):
+        self._summary_empty_state.set_title(title)
+        self._summary_empty_state.set_description(description)
+        self._summary_content_stack.setCurrentWidget(self._summary_empty_state)
+
+    def _show_summary_table(self):
+        self._summary_content_stack.setCurrentWidget(self.summary_table)
 
     # ---------- view mode ----------
     def _sync_view_mode_widgets(self):
@@ -1640,22 +1755,21 @@ class WeatherDutyApp(QMainWindow):
         return all_dates
 
     def _update_summary_date_selector(self, all_dates):
-        import datetime
-
         self.summary_date_selector.clear()
         if not all_dates:
             return
 
+        today_str = datetime.datetime.now().strftime("%Y%m%d")
         for date_str in all_dates:
-            pretty = f"{date_str[4:6]}/{date_str[6:8]}" if len(date_str) == 8 else date_str
+            # routeKey(date_str)는 그대로 두고 표시 문구만 "오늘 08/28" 형태로.
+            chip_text = _summary_date_chip_text(date_str, today_str)
             self.summary_date_selector.addItem(
-                date_str, pretty, onClick=lambda _c=False, d=date_str: self._on_summary_date_selected(d)
+                date_str, chip_text, onClick=lambda _c=False, d=date_str: self._on_summary_date_selected(d)
             )
 
         if self.selected_summary_date not in all_dates:
             # 지난 실측 날짜가 목록 맨 앞에 추가되므로, 처음 열 때는 과거 날짜가 아니라
             # 오늘(또는 오늘이 없으면 가장 빠른 미래 날짜)을 기본으로 보여준다.
-            today_str = datetime.datetime.now().strftime("%Y%m%d")
             self.selected_summary_date = next((d for d in all_dates if d >= today_str), all_dates[0])
         self.summary_date_selector.setCurrentItem(self.selected_summary_date)
 
@@ -1665,24 +1779,29 @@ class WeatherDutyApp(QMainWindow):
         table.setRowCount(0)
         self._summary_row_days = {}
         self._summary_branch_rows = {}
+        # 빈 상태로 빠지는 경우에도 이전 렌더링에서 켜졌던 배너가 그대로 남지
+        # 않도록, 매 렌더링마다 우선 둘 다 끈 뒤 필요할 때만 다시 켠다.
+        self._summary_no_branch_banner.setVisible(False)
+        self._summary_error_banner.setVisible(False)
 
         if not favorites:
-            table.setRowCount(1)
-            item = QTableWidgetItem("즐겨찾기가 비어 있습니다.")
-            item.setForeground(_qcolor(c["subtext"]))
-            table.setItem(0, 1, item)
+            self._show_summary_empty_state(
+                "종합보기에 표시할 즐겨찾기 지역이 없습니다.",
+                "즐겨찾기 편집에서 지역을 추가해 주세요.",
+            )
             return
 
         all_dates = self._all_summary_dates(favorites)
         self._update_summary_date_selector(all_dates)
 
         if not all_dates:
-            table.setRowCount(1)
-            item = QTableWidgetItem("예보 데이터를 불러오는 중입니다…")
-            item.setForeground(_qcolor(c["subtext"]))
-            table.setItem(0, 1, item)
+            self._show_summary_empty_state(
+                "표시할 데이터가 없습니다.",
+                "조회 중이거나 아직 예보 데이터가 없습니다. 잠시 후 다시 확인해 주세요.",
+            )
             return
 
+        self._show_summary_table()
         target_date = self.selected_summary_date
 
         branches = config.get_branches()
@@ -1696,6 +1815,11 @@ class WeatherDutyApp(QMainWindow):
         unassigned = [r for r in favorites if r not in assigned]
         if unassigned:
             groups.append(("미분류", unassigned))
+
+        # 지사 미설정/일부 오류는 표를 막지 않는 비차단 안내(InlineBanner)로만 알린다.
+        self._summary_no_branch_banner.setVisible(not branches)
+        has_any_error = any((self.reports.get(r) or {}).get("errors") for r in favorites)
+        self._summary_error_banner.setVisible(bool(has_any_error))
 
         total_rows = sum(len(members) for _b, members in groups)
         table.setRowCount(total_rows)
@@ -1722,78 +1846,110 @@ class WeatherDutyApp(QMainWindow):
                 report = self.reports.get(region_name)
                 day = member_days[region_name]
                 is_loading = report is None
+                # 최다 강수는 특보·오류가 아니므로 행 전체를 강한 색으로 칠하지 않는다 -
+                # 강수량 셀 배경(accent_soft)+★ 표시+글자 굵기만으로 구분한다.
                 is_best = region_name == best_name and best_amount > 0
-                row_bg = c["warn_bg"] if is_best else c["card"]
-                emph_color = c["warn_text"] if is_best else c["text"]
+                row_bg = c["surface"]
 
                 self._summary_row_days[row_idx] = (region_name, day)
 
                 name_text = ("조회 중… " + region_name) if is_loading else region_name
-                self._set_summary_item(table, row_idx, 1, name_text, emph_color, row_bg, self.font_body)
+                self._set_summary_item(
+                    table, row_idx, 1, name_text, c["text_primary"], row_bg, theme.font_role("body"),
+                    align=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, tooltip=region_name,
+                )
 
                 tmin, tmax = (day.get("tmin"), day.get("tmax")) if day else (None, None)
-                temp_text = f"{tmin}°/{tmax}°" if (tmin is not None or tmax is not None) else "-"
-                self._set_summary_item(table, row_idx, 2, temp_text, c["text"], row_bg, self.font_small)
+                temp_text = f"{tmin}°/{tmax}°" if (tmin is not None or tmax is not None) else "—"
+                self._set_summary_item(
+                    table, row_idx, 2, temp_text, c["text_primary"], row_bg, theme.font_role("caption"),
+                    align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                )
 
                 fl_min, fl_max = (day.get("feels_like_min"), day.get("feels_like_max")) if day else (None, None)
+                feels_tooltip = ""
                 if fl_min is not None:
                     feels_text = f"{fl_min}°/{fl_max}°"
                 elif day and day.get("source") == "중기예보":
-                    feels_text = "중기예보만"
+                    feels_text = "중기예보"
+                    feels_tooltip = "중기예보는 체감온도를 제공하지 않습니다."
                 else:
-                    feels_text = "-"
-                self._set_summary_item(table, row_idx, 3, feels_text, c["text"], row_bg, self.font_small)
-
-                pop = day.get("pop") if day else None
-                pop_text = f"{pop}%" if pop is not None else "-"
+                    feels_text = "—"
                 self._set_summary_item(
-                    table, row_idx, 4, pop_text, theme.pop_color(pop, c), row_bg, self.font_small
+                    table, row_idx, 3, feels_text, c["text_secondary"], row_bg, theme.font_role("caption"),
+                    align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, tooltip=feels_tooltip,
                 )
 
+                pop = day.get("pop") if day else None
+                pop_text = f"{pop}%" if pop is not None else "—"
+                self._set_summary_item(
+                    table, row_idx, 4, pop_text, theme.pop_color(pop, c), row_bg, theme.font_role("caption"),
+                    align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                )
+
+                pcp_tooltip = ""
                 if day is None:
-                    pcp_text = "-"
+                    pcp_text = "—"
                 elif day.get("pcp"):
                     peak = _pcp_peak_hour_text(day)
                     pcp_text = f"{day.get('pcp')}{peak}" if peak else day.get("pcp")
                 elif day.get("source") == "중기예보":
-                    pcp_text = "중기예보만"
+                    pcp_text = "중기예보"
+                    pcp_tooltip = "중기예보는 강수량을 제공하지 않습니다."
                 else:
                     pcp_text = "강수없음"
-                pcp_font = QFont(self.font_body)
-                pcp_font.setBold(is_best)
-                self._set_summary_item(table, row_idx, 5, pcp_text, emph_color, row_bg, pcp_font)
+                pcp_display = f"★ {pcp_text}" if is_best else pcp_text
+                pcp_bg = c["accent_soft"] if is_best else row_bg
+                pcp_font_role = "label" if is_best else "caption"  # label=Medium 굵기로 강조
+                self._set_summary_item(
+                    table, row_idx, 5, pcp_display, c["text_primary"], pcp_bg, theme.font_role(pcp_font_role),
+                    align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, tooltip=pcp_tooltip,
+                )
 
-                warn_text = "⚠" if (report and report.get("warnings")) else ""
-                self._set_summary_item(table, row_idx, 6, warn_text, c["warn_text"], row_bg, self.font_small)
+                warnings_list = (report.get("warnings") or []) if report else []
+                if warnings_list:
+                    warn_text = "⚠ 특보"
+                    warn_fg, warn_bg_cell = c["danger"], c["danger_soft"]
+                    warn_tooltip = "\n".join(warnings_list)
+                else:
+                    warn_text = "—"
+                    warn_fg, warn_bg_cell = c["text_tertiary"], row_bg
+                    warn_tooltip = ""
+                self._set_summary_item(
+                    table, row_idx, 6, warn_text, warn_fg, warn_bg_cell, theme.font_role("caption"),
+                    align=Qt.AlignmentFlag.AlignCenter, tooltip=warn_tooltip,
+                )
 
-                self._set_summary_item(table, row_idx, 0, "", c["text"], c["bg"], self.font_body)
+                self._set_summary_item(
+                    table, row_idx, 0, "", c["text_primary"], c["surface_alt"], theme.font_role("body_medium"),
+                    align=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                )
 
                 row_idx += 1
 
-            branch_item = QTableWidgetItem(branch_name)
-            branch_item.setForeground(_qcolor(c["text"]))
-            branch_item.setBackground(_qcolor(c["bg"]))
-            branch_item.setFont(self.font_body)
-            branch_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            # 지사명 클릭 = 시간대별 누적강수 비교(_open_branch_range)라는 걸 색상 없이도
+            # 알 수 있도록 chevron 문구 + 툴팁을 함께 붙인다.
+            branch_item = QTableWidgetItem(f"{branch_name}  ›")
+            branch_item.setForeground(_qcolor(c["text_primary"]))
+            branch_item.setBackground(_qcolor(c["surface_alt"]))
+            branch_item.setFont(theme.font_role("body_medium"))
+            branch_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            branch_item.setToolTip("클릭하여 시간대별 누적강수 비교")
             table.setItem(start_row, 0, branch_item)
             if row_idx - start_row > 1:
                 table.setSpan(start_row, 0, row_idx - start_row, 1)
             for r in range(start_row, row_idx):
                 self._summary_branch_rows[r] = (branch_name, list(members))
 
-        table.resizeColumnsToContents()
-        # 지사 열은 대부분 행이 span으로 합쳐져 실제 텍스트가 있는 행이 거의 없다보니
-        # resizeColumnsToContents()가 내용을 제대로 못 읽고 너무 좁게(글자가 "..."로
-        # 잘릴 정도로) 잡는 경우가 있어, 지사명이 넉넉히 들어갈 고정 너비로 보정한다.
-        table.setColumnWidth(0, 90)
-
     @staticmethod
-    def _set_summary_item(table, row, col, text, color_hex, bg_hex, font):
+    def _set_summary_item(table, row, col, text, color_hex, bg_hex, font, align=None, tooltip=""):
         item = QTableWidgetItem(text)
         item.setForeground(_qcolor(color_hex))
         item.setBackground(_qcolor(bg_hex))
         item.setFont(font)
-        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter if col != 1 else Qt.AlignmentFlag.AlignVCenter)
+        item.setTextAlignment(align if align is not None else Qt.AlignmentFlag.AlignCenter)
+        if tooltip:
+            item.setToolTip(tooltip)
         table.setItem(row, col, item)
 
     def _on_summary_cell_double_clicked(self, row, _col):
