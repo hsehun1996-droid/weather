@@ -11,13 +11,15 @@
 위젯이므로 테마 변경 구독은 `theme.bind_theme_change()`(위젯 파괴 시 자동
 연결 해제)로 건다.
 """
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QFontMetrics
+import math
+
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QStackedLayout, QVBoxLayout, QWidget,
 )
 
-from qfluentwidgets import IndeterminateProgressRing, TransparentToolButton
+from qfluentwidgets import FluentIcon, IndeterminateProgressRing, TransparentToolButton
 
 from . import theme
 
@@ -62,6 +64,7 @@ class StatusPill(QWidget):
         self._label.setFont(theme.font_role("micro"))
         layout.addWidget(self._label)
         self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        self.setAccessibleName(text)
 
         self._refresh_style()
         theme.bind_theme_change(self, self._refresh_style)
@@ -69,6 +72,7 @@ class StatusPill(QWidget):
     def set_state(self, text=None, tone=None):
         if text is not None:
             self._label.setText(text)
+            self.setAccessibleName(text)
         if tone is not None:
             self._tone = tone
         self._refresh_style()
@@ -119,44 +123,87 @@ class TagBadge(QLabel):
 class InlineBanner(QWidget):
     """정보/정상/주의/오류 메시지를 배경색 + 접두 기호 + 텍스트로 보여주는 배너.
     상세보기의 특보 배너, 오류 문구처럼 흩어져 있던 "상태 배너" 패턴을 하나로
-    표준화하기 위한 컴포넌트(레이아웃 배선은 gui.py가 그대로 담당)."""
+    표준화하기 위한 컴포넌트(레이아웃 배선은 gui.py가 그대로 담당).
 
-    def __init__(self, text="", level="info", parent=None):
+    title(선택)을 주면 굵은 제목 줄이 본문 위에 붙는다("데이터 조회 오류"
+    처럼). subtle=True는 "특보 없음"처럼 평상시 상태를 나타낼 때 쓴다 -
+    톤 배경(예: success_soft) 대신 surface_alt로 덜 튀게 칠하고 본문 글자도
+    중립색(text_secondary)을 써서 초록 등을 과하게 쓰지 않는다."""
+
+    def __init__(self, text="", level="info", parent=None, title=None, subtle=False):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._level = level
+        self._subtle = subtle
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(theme.SPACE_4, theme.SPACE_3, theme.SPACE_4, theme.SPACE_3)
         layout.setSpacing(theme.SPACE_2)
         self._glyph_label = QLabel(self)
         self._glyph_label.setFont(theme.font_role("body_medium"))
-        layout.addWidget(self._glyph_label)
+        layout.addWidget(self._glyph_label, 0, Qt.AlignmentFlag.AlignTop)
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(theme.SPACE_1)
+        self._title_label = QLabel(self)
+        self._title_label.setFont(theme.font_role("label"))
+        self._title_label.setWordWrap(True)
+        self._title_label.setVisible(bool(title))
+        if title:
+            self._title_label.setText(title)
+        text_col.addWidget(self._title_label)
+
         self._text_label = QLabel(text, self)
         self._text_label.setFont(theme.font_role("body"))
         self._text_label.setWordWrap(True)
-        layout.addWidget(self._text_label, 1)
+        text_col.addWidget(self._text_label)
+        layout.addLayout(text_col, 1)
 
+        self.setAccessibleDescription(text)
         self._refresh_style()
         theme.bind_theme_change(self, self._refresh_style)
 
+    @property
+    def text_label(self):
+        """본문 QLabel 자체를 노출한다 - gui.py가 self.error_label/
+        self.warning_banner 같은 기존 속성명을 이 라벨의 alias로 유지해야
+        해서 필요하다(그 외에는 set_message()를 쓰는 편이 낫다)."""
+        return self._text_label
+
     def set_message(self, text, level=None):
         self._text_label.setText(text)
+        self.setAccessibleDescription(text)
         if level is not None:
             self._level = level
+        self._refresh_style()
+
+    def set_title(self, title):
+        self._title_label.setText(title or "")
+        self._title_label.setVisible(bool(title))
+
+    def set_level(self, level, subtle=None):
+        self._level = level
+        if subtle is not None:
+            self._subtle = subtle
         self._refresh_style()
 
     def _refresh_style(self):
         c = theme.colors()
         fg, bg = _tone_colors(c, self._level)
         glyph = _BANNER_GLYPHS.get(self._level, _BANNER_GLYPHS["info"])
+        body_color = fg
+        if self._subtle:
+            bg = c["surface_alt"]
+            body_color = c["text_secondary"]
         theme.set_dynamic_property(self, "level", self._level)
         self._glyph_label.setText(glyph)
         self.setStyleSheet(
             f"InlineBanner {{ background-color:{bg}; border:none; border-radius:{theme.RADIUS_PANEL}px; }}"
         )
         self._glyph_label.setStyleSheet(f"color:{fg}; background:transparent; border:none;")
-        self._text_label.setStyleSheet(f"color:{fg}; background:transparent; border:none;")
+        self._title_label.setStyleSheet(f"color:{fg}; background:transparent; border:none;")
+        self._text_label.setStyleSheet(f"color:{body_color}; background:transparent; border:none;")
 
 
 class SectionHeader(QWidget):
@@ -342,6 +389,7 @@ class IconActionButton(TransparentToolButton):
         self.setIconSize(QSize(theme.ICON_SIZE_DEFAULT, theme.ICON_SIZE_DEFAULT))
         if tooltip:
             self.setToolTip(tooltip)
+            self.setAccessibleName(tooltip)
 
 
 class DangerHoverIconButton(TransparentToolButton):
@@ -357,6 +405,7 @@ class DangerHoverIconButton(TransparentToolButton):
         self.setIconSize(QSize(theme.ICON_SIZE_DEFAULT, theme.ICON_SIZE_DEFAULT))
         if tooltip:
             self.setToolTip(tooltip)
+            self.setAccessibleName(tooltip)
         self._normal_icon = icon
         self._danger_icon = icon
         self._refresh_icons()
@@ -564,110 +613,304 @@ class FormField(QWidget):
         self._helper_label.setStyleSheet(f"color:{helper_color}; background:transparent; border:none;")
 
 
+def _draw_weather_icon_pixmap(condition_text, color_hex, size=16):
+    """condition 문자열(API 값 그대로, 재해석하지 않고 부분 문자열 매칭만
+    한다)에 맞춰 아주 단순한 단색 QPainter 아이콘을 그린다. 컬러 이모지나
+    외부 아이콘/폰트 없이, 라이트/다크 갱신 시 색만 바꿔 다시 그릴 수 있게
+    순수 벡터로 그린다 - 텍스트는 절대 대체하지 않고 옆에 나란히 쓴다."""
+    condition_text = condition_text or ""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(color_hex))
+    pen.setWidthF(1.3)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+
+    has_rain = "비" in condition_text
+    has_snow = "눈" in condition_text
+    is_clear = "맑음" in condition_text and not has_rain and not has_snow
+    cx, cy = size / 2.0, size / 2.0
+
+    if is_clear:
+        r = size * 0.24
+        painter.drawEllipse(QPointF(cx, cy), r, r)
+        for angle in range(0, 360, 45):
+            rad = math.radians(angle)
+            x1, y1 = cx + (r + 1.5) * math.cos(rad), cy + (r + 1.5) * math.sin(rad)
+            x2, y2 = cx + (r + 4) * math.cos(rad), cy + (r + 4) * math.sin(rad)
+            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+    elif condition_text:
+        # 구름 모양(둥근 사각형 + 위로 볼록한 원 두 개) - 흐림/구름/비/눈 공통 베이스.
+        cloud_w, cloud_h = size * 0.8, size * 0.36
+        cloud_rect = QRectF(cx - cloud_w / 2, cy - cloud_h * 0.25, cloud_w, cloud_h)
+        painter.drawRoundedRect(cloud_rect, cloud_h / 2, cloud_h / 2)
+        painter.drawEllipse(QPointF(cx - cloud_w * 0.16, cy - cloud_h * 0.35), cloud_h * 0.4, cloud_h * 0.4)
+        painter.drawEllipse(QPointF(cx + cloud_w * 0.14, cy - cloud_h * 0.55), cloud_h * 0.46, cloud_h * 0.46)
+        base_y = cy + cloud_h * 0.2
+        if has_rain:
+            for dx in (-cloud_w * 0.22, 0.0, cloud_w * 0.22):
+                painter.drawLine(QPointF(cx + dx, base_y + 1), QPointF(cx + dx - 1, base_y + size * 0.28))
+        if has_snow:
+            for dx in (-cloud_w * 0.22, 0.0, cloud_w * 0.22):
+                py = base_y + size * 0.2
+                painter.drawLine(QPointF(cx + dx - 1.2, py), QPointF(cx + dx + 1.2, py))
+                painter.drawLine(QPointF(cx + dx, py - 1.2), QPointF(cx + dx, py + 1.2))
+    else:
+        # 알 수 없음/데이터 없음 - 옅은 원 하나만(과한 강조 없는 중립 fallback).
+        r = size * 0.22
+        painter.drawEllipse(QPointF(cx, cy), r, r)
+    painter.end()
+    return pixmap
+
+
 class ForecastRow(QFrame):
     """일자별 예보 한 줄(지역별 상세보기). 순수 표시 컴포넌트 - 호출부(gui.py)가
     이미 계산/포맷을 끝낸 문자열과 톤 이름만 `set_data()`로 넘겨받아 배치할
     뿐, API 호출이나 수치 계산·재해석은 하지 않는다.
 
-    정보 배치(넓은 화면 기준): [날짜/요일] [날씨 상태] [강수확률] [강수량]
-    [체감] [출처 배지] [최저/최고] [chevron]. QGridLayout + stretch factor로
-    배치해 넓은 화면에서 늘어나고 좁은 화면에서도 주요 수치가 겹치지 않게 한다."""
+    콘텐츠 폭이 FORECAST_ROW_COMPACT_BREAKPOINT(760px) 이상이면 한 줄(normal),
+    미만이면 두 줄(compact) 레이아웃으로 전환한다 - 정보를 숨기거나 가로
+    스크롤을 만드는 대신 항상 미리 만들어 둔 두 레이아웃 중 하나만 보여주는
+    방식(QStackedLayout)이라, resizeEvent마다 위젯을 새로 만들지 않는다."""
 
     doubleClicked = Signal()
-
-    _COL_DATE, _COL_CONDITION, _COL_POP, _COL_PCP, _COL_FEELS, _COL_SOURCE, _COL_TEMP, _COL_CHEVRON = range(8)
+    activated = Signal()
 
     # 강수량 배지는 "중기예보(강수량 미제공)"처럼 유독 긴 문구가 나올 수 있어,
-    # 이 칸만 최대 폭을 두고 넘치면 말줄임(...) + 툴팁으로 전체 문구를 보여준다
-    # (8칸짜리 좁은 행에서 이 배지 하나 때문에 960px에서도 잘리는 걸 막기 위함).
+    # 이 칸만 최대 폭을 두고 넘치면 말줄임(...) + 툴팁으로 전체 문구를 보여준다.
     _PCP_BADGE_MAX_WIDTH = 108
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(theme.FORECAST_ROW_HEIGHT)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._has_detail = True
+        self._is_compact = False
 
-        grid = QGridLayout(self)
-        grid.setContentsMargins(theme.SPACE_3, 0, theme.SPACE_3, 0)
-        grid.setHorizontalSpacing(theme.SPACE_2)
-
-        self._date_label = QLabel(self)
-        self._date_label.setFont(theme.font_role("caption"))
-        grid.addWidget(self._date_label, 0, self._COL_DATE)
-
-        self._condition_label = QLabel(self)
-        self._condition_label.setFont(theme.font_role("body"))
-        grid.addWidget(self._condition_label, 0, self._COL_CONDITION)
-
-        self._pop_badge = TagBadge("", tone="neutral", parent=self)
-        grid.addWidget(self._pop_badge, 0, self._COL_POP, Qt.AlignmentFlag.AlignVCenter)
-
-        self._pcp_badge = TagBadge("", tone="neutral", parent=self)
-        self._pcp_badge.setMaximumWidth(self._PCP_BADGE_MAX_WIDTH)
-        grid.addWidget(self._pcp_badge, 0, self._COL_PCP, Qt.AlignmentFlag.AlignVCenter)
-
-        self._feels_label = QLabel(self)
-        self._feels_label.setFont(theme.font_role("caption"))
-        grid.addWidget(self._feels_label, 0, self._COL_FEELS)
-
-        self._source_badge = TagBadge("", tone="neutral", parent=self)
-        self._source_badge.setFixedHeight(theme.SPACE_6 - theme.SPACE_1)  # 22~24px
-        grid.addWidget(self._source_badge, 0, self._COL_SOURCE, Qt.AlignmentFlag.AlignVCenter)
-
-        self._temp_label = QLabel(self)
-        self._temp_label.setFont(theme.font_role("label"))
-        self._temp_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid.addWidget(self._temp_label, 0, self._COL_TEMP)
-
-        self._chevron_label = QLabel("›", self)
-        self._chevron_label.setFont(theme.font_role("card_title"))
-        self._chevron_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        grid.addWidget(self._chevron_label, 0, self._COL_CHEVRON)
-
-        # 날씨 상태(condition) 칸만 남는 공간을 가져가고, 나머지는 내용 크기만큼만
-        # 차지한다 - 고정 폭을 여러 칸에 걸어두는 대신 이 칸 하나에만 stretch를 준다.
-        grid.setColumnStretch(self._COL_CONDITION, 1)
+        self._stack = QStackedLayout(self)
+        self._stack.setContentsMargins(0, 0, 0, 0)
+        self._normal = self._build_normal_page()
+        self._compact = self._build_compact_page()
+        self._stack.addWidget(self._normal["page"])
+        self._stack.addWidget(self._compact["page"])
+        self._apply_mode(compact=False)
 
         self._refresh_style()
         theme.bind_theme_change(self, self._refresh_style)
 
+    # ---------- 레이아웃 생성 ----------
+    def _make_icon_label(self, parent):
+        label = QLabel(parent)
+        label.setFixedSize(theme.ICON_SIZE_SMALL, theme.ICON_SIZE_SMALL)
+        return label
+
+    def _make_detail_button(self, parent, tooltip_text):
+        btn = IconActionButton(FluentIcon.CHEVRON_RIGHT, tooltip=tooltip_text, parent=parent)
+        btn.clicked.connect(self._on_detail_button_clicked)
+        return btn
+
+    def _build_normal_page(self):
+        page = QWidget(self)
+        grid = QGridLayout(page)
+        grid.setContentsMargins(theme.SPACE_3, 0, theme.SPACE_3, 0)
+        grid.setHorizontalSpacing(theme.SPACE_2)
+        col_date, col_icon, col_cond, col_pop, col_pcp, col_feels, col_source, col_temp, col_btn = range(9)
+
+        date_label = QLabel(page)
+        date_label.setFont(theme.font_role("caption"))
+        grid.addWidget(date_label, 0, col_date)
+
+        icon_label = self._make_icon_label(page)
+        grid.addWidget(icon_label, 0, col_icon, Qt.AlignmentFlag.AlignVCenter)
+
+        condition_label = QLabel(page)
+        condition_label.setFont(theme.font_role("body"))
+        grid.addWidget(condition_label, 0, col_cond)
+
+        pop_badge = TagBadge("", tone="neutral", parent=page)
+        grid.addWidget(pop_badge, 0, col_pop, Qt.AlignmentFlag.AlignVCenter)
+
+        pcp_badge = TagBadge("", tone="neutral", parent=page)
+        pcp_badge.setMaximumWidth(self._PCP_BADGE_MAX_WIDTH)
+        grid.addWidget(pcp_badge, 0, col_pcp, Qt.AlignmentFlag.AlignVCenter)
+
+        feels_label = QLabel(page)
+        feels_label.setFont(theme.font_role("caption"))
+        grid.addWidget(feels_label, 0, col_feels)
+
+        source_badge = TagBadge("", tone="neutral", parent=page)
+        source_badge.setFixedHeight(theme.SPACE_6 - theme.SPACE_1)
+        grid.addWidget(source_badge, 0, col_source, Qt.AlignmentFlag.AlignVCenter)
+
+        temp_label = QLabel(page)
+        temp_label.setFont(theme.font_role("label"))
+        temp_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(temp_label, 0, col_temp)
+
+        detail_btn = self._make_detail_button(page, "상세보기")
+        grid.addWidget(detail_btn, 0, col_btn, Qt.AlignmentFlag.AlignVCenter)
+
+        grid.setColumnStretch(col_cond, 1)
+
+        return {
+            "page": page, "date": date_label, "icon": icon_label, "condition": condition_label,
+            "pop": pop_badge, "pcp": pcp_badge, "feels": feels_label, "source": source_badge,
+            "temp": temp_label, "button": detail_btn,
+        }
+
+    def _build_compact_page(self):
+        page = QWidget(self)
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(theme.SPACE_3, theme.SPACE_1, theme.SPACE_3, theme.SPACE_1)
+        outer.setSpacing(theme.SPACE_1)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(theme.SPACE_2)
+        date_label = QLabel(page)
+        date_label.setFont(theme.font_role("caption"))
+        top_row.addWidget(date_label)
+        icon_label = self._make_icon_label(page)
+        top_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        condition_label = QLabel(page)
+        condition_label.setFont(theme.font_role("body"))
+        top_row.addWidget(condition_label, 1)
+        temp_label = QLabel(page)
+        temp_label.setFont(theme.font_role("label"))
+        temp_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        top_row.addWidget(temp_label)
+        detail_btn = self._make_detail_button(page, "상세보기")
+        top_row.addWidget(detail_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        outer.addLayout(top_row)
+
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(theme.SPACE_2)
+        pop_badge = TagBadge("", tone="neutral", parent=page)
+        bottom_row.addWidget(pop_badge)
+        pcp_badge = TagBadge("", tone="neutral", parent=page)
+        pcp_badge.setMaximumWidth(self._PCP_BADGE_MAX_WIDTH)
+        bottom_row.addWidget(pcp_badge)
+        feels_label = QLabel(page)
+        feels_label.setFont(theme.font_role("caption"))
+        bottom_row.addWidget(feels_label)
+        bottom_row.addStretch(1)
+        source_badge = TagBadge("", tone="neutral", parent=page)
+        source_badge.setFixedHeight(theme.SPACE_6 - theme.SPACE_1)
+        bottom_row.addWidget(source_badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        outer.addLayout(bottom_row)
+
+        return {
+            "page": page, "date": date_label, "icon": icon_label, "condition": condition_label,
+            "pop": pop_badge, "pcp": pcp_badge, "feels": feels_label, "source": source_badge,
+            "temp": temp_label, "button": detail_btn,
+        }
+
+    # ---------- 데이터 반영 ----------
     def set_data(
         self, *, date_text, condition_text, pop_text, pop_tone, pcp_text,
-        feels_text, source_text, source_tone, temp_text, tooltip,
+        feels_text, source_text, source_tone, temp_text, tooltip, pcp_tooltip=None,
+        has_detail=True, disabled_reason="",
     ):
-        """이미 계산된 표시 문자열만 받는다 - 여기서 숫자를 새로 계산하지 않는다."""
-        self._date_label.setText(date_text)
-        self._condition_label.setText(condition_text)
-        self._pop_badge.set_text_and_tone(pop_text, pop_tone)
-        # 뱃지 폭(패딩 포함)에 맞춰 필요할 때만 말줄임 - 원본 문구는 툴팁으로 유지.
+        """이미 계산된 표시 문자열만 받는다 - 여기서 숫자를 새로 계산하지 않는다.
+        pcp_tooltip을 안 주면(기존 호출부 호환) 기존처럼 pcp_text 전체를
+        tooltip으로 쓴다. has_detail=False면 상세보기 버튼/키보드 활성화를
+        비활성화하고 disabled_reason을 tooltip으로 보여준다(실제 시간별
+        데이터가 없는 행)."""
+        self._has_detail = has_detail
         available = self._PCP_BADGE_MAX_WIDTH - theme.SPACE_2 * 2 - theme.SPACE_1
-        elided_pcp = QFontMetrics(self._pcp_badge.font()).elidedText(
-            pcp_text, Qt.TextElideMode.ElideRight, max(available, 0)
-        )
-        self._pcp_badge.set_text_and_tone(elided_pcp, "neutral")
-        self._pcp_badge.setToolTip(pcp_text)
-        self._feels_label.setText(feels_text)
-        self._feels_label.setVisible(bool(feels_text))
-        self._source_badge.set_text_and_tone(source_text, source_tone)
-        self._temp_label.setText(temp_text)
+        icon_color = theme.colors()["text_secondary"]
+
+        for page in (self._normal, self._compact):
+            page["date"].setText(date_text)
+            page["condition"].setText(condition_text)
+            page["icon"].setPixmap(_draw_weather_icon_pixmap(condition_text, icon_color, theme.ICON_SIZE_SMALL))
+            page["pop"].set_text_and_tone(pop_text, pop_tone)
+            elided_pcp = QFontMetrics(page["pcp"].font()).elidedText(
+                pcp_text, Qt.TextElideMode.ElideRight, max(available, 0)
+            )
+            page["pcp"].set_text_and_tone(elided_pcp, "neutral")
+            page["pcp"].setToolTip(pcp_tooltip if pcp_tooltip else pcp_text)
+            page["feels"].setText(feels_text)
+            page["feels"].setVisible(bool(feels_text))
+            page["source"].set_text_and_tone(source_text, source_tone)
+            page["temp"].setText(temp_text)
+
+            btn = page["button"]
+            btn.setVisible(True)
+            btn.setEnabled(has_detail)
+            btn_tip = "상세보기" if has_detail else (disabled_reason or "시간별 상세 데이터가 없습니다.")
+            btn.setToolTip(btn_tip)
+            btn.setAccessibleName(btn_tip)
+
         self.setToolTip(tooltip)
+        self.setAccessibleName(f"{date_text} {condition_text} {temp_text}".strip())
+        access_desc = tooltip or ("더블클릭 또는 상세보기 버튼으로 시간별 상세보기" if has_detail else "시간별 상세 데이터 없음")
+        self.setAccessibleDescription(access_desc)
+
+    # ---------- 반응형 전환 ----------
+    def resizeEvent(self, event):  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        width = self.contentsRect().width()
+        self._apply_mode(compact=width < theme.FORECAST_ROW_COMPACT_BREAKPOINT)
+
+    def _apply_mode(self, compact):
+        if compact == self._is_compact and self.height() in (
+            theme.FORECAST_ROW_HEIGHT, theme.FORECAST_ROW_HEIGHT_COMPACT,
+        ):
+            # 이미 같은 모드면 다시 전환할 필요 없음(불필요한 재적용/깜박임 방지).
+            if self._stack.currentWidget() is (self._compact["page"] if compact else self._normal["page"]):
+                return
+        self._is_compact = compact
+        if compact:
+            self._stack.setCurrentWidget(self._compact["page"])
+            self.setMinimumHeight(theme.FORECAST_ROW_HEIGHT_COMPACT)
+            self.setMaximumHeight(theme.FORECAST_ROW_HEIGHT_COMPACT)
+        else:
+            self._stack.setCurrentWidget(self._normal["page"])
+            self.setMinimumHeight(theme.FORECAST_ROW_HEIGHT)
+            self.setMaximumHeight(theme.FORECAST_ROW_HEIGHT)
+
+    # ---------- 활성화(더블클릭/버튼 클릭/키보드) ----------
+    def _on_detail_button_clicked(self):
+        if self._has_detail:
+            self.activated.emit()
 
     def mouseDoubleClickEvent(self, event):  # noqa: N802 - Qt override
         self.doubleClicked.emit()
         super().mouseDoubleClickEvent(event)
 
+    def keyPressEvent(self, event):  # noqa: N802 - Qt override
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            if self._has_detail:
+                self.activated.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def focusInEvent(self, event):  # noqa: N802 - Qt override
+        super().focusInEvent(event)
+        self._refresh_style()
+
+    def focusOutEvent(self, event):  # noqa: N802 - Qt override
+        super().focusOutEvent(event)
+        self._refresh_style()
+
     def _refresh_style(self):
         c = theme.colors()
+        focus_border = f"border:{theme.FOCUS_RING_WIDTH}px solid {c['focus']};" if self.hasFocus() else "border:none;"
         self.setStyleSheet(
-            f"ForecastRow {{ background-color:transparent; border:none; border-radius:{theme.RADIUS_CONTROL}px; }}"
+            f"ForecastRow {{ background-color:transparent; {focus_border}"
+            f" border-radius:{theme.RADIUS_CONTROL}px; }}"
             f"ForecastRow:hover {{ background-color:{c['surface_hover']}; }}"
         )
-        for label, color_key in (
-            (self._date_label, "text_primary"),
-            (self._condition_label, "text_secondary"),
-            (self._feels_label, "text_primary"),
-            (self._temp_label, "text_primary"),
-            (self._chevron_label, "text_tertiary"),
-        ):
-            label.setStyleSheet(f"color:{c[color_key]}; background:transparent; border:none;")
+        for page in (self._normal, self._compact):
+            for key, color_key in (
+                ("date", "text_primary"), ("condition", "text_secondary"),
+                ("feels", "text_primary"), ("temp", "text_primary"),
+            ):
+                page[key].setStyleSheet(f"color:{c[color_key]}; background:transparent; border:none;")
+            page["icon"].setPixmap(
+                _draw_weather_icon_pixmap(page["condition"].text(), c["text_secondary"], theme.ICON_SIZE_SMALL)
+            )

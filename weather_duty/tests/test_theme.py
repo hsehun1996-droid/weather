@@ -18,6 +18,15 @@ from weather_duty import theme  # noqa: E402
 # QFont 생성에는 QApplication 인스턴스가 있어야 폰트 백엔드가 안전하게 동작한다.
 _app = QApplication.instance() or QApplication([])
 
+
+def setUpModule():
+    # theme.colors()["accent"]/["focus"]는 qfluentwidgets.themeColor()를 그대로
+    # 읽어온다(라이브러리 자체 위젯과 강조색을 어긋나지 않게 하기 위함) - 이
+    # 값은 setThemeColor()를 부른 뒤에야 앱이 의도한 시드로 고정되므로, 실행
+    # 순서에 관계없이 이 모듈의 모든 테스트가 같은 기준으로 돌게 여기서 한 번
+    # 초기화한다(실제 앱은 init_app_theme()을 시작 시 한 번 호출하는 것과 동일).
+    theme.init_app_theme()
+
 # 예전 theme.py가 쓰던 색상 키(gui.py의 실제 c["..."] 사용처 전수 조사 결과).
 _LEGACY_COLOR_KEYS = [
     "bg", "card", "card_hover", "text", "subtext", "accent",
@@ -113,6 +122,19 @@ class ColorTokenTest(unittest.TestCase):
         self.assertEqual(set(light.keys()), set(dark.keys()))
         self.assertNotEqual(light["background"], dark["background"])
 
+    def test_accent_matches_qfluentwidgets_theme_color(self):
+        # PrimaryPushButton, SegmentedWidget 선택 표시 등 qfluentwidgets 자체
+        # 위젯은 themeColor()를 그대로 쓰므로, 우리 토큰의 accent/focus도 같은
+        # 값이어야 커스텀 스타일과 라이브러리 기본 위젯이 어긋나 보이지 않는다.
+        from qfluentwidgets import themeColor
+
+        for mode in (Theme.LIGHT, Theme.DARK):
+            setTheme(mode)
+            c = theme.colors()
+            live = themeColor().name().upper()
+            self.assertEqual(c["accent"], live, mode)
+            self.assertEqual(c["focus"], live, mode)
+
 
 class SpacingRadiusSizeTokenTest(unittest.TestCase):
     def test_spacing_tokens(self):
@@ -149,14 +171,80 @@ class TypographyTest(unittest.TestCase):
 
 
 class PopColorTest(unittest.TestCase):
-    def test_thresholds_unchanged(self):
+    """강수확률은 오류도 실제 기상특보도 아니므로 danger/warning을 쓰지
+    않는다 - neutral(text_primary)/info/accent 3단계만 구분한다."""
+
+    def test_none_is_neutral_secondary(self):
         c = theme.colors()
-        self.assertEqual(theme.pop_color(80, c), c["risk_high"])
-        self.assertEqual(theme.pop_color(70, c), c["risk_high"])
-        self.assertEqual(theme.pop_color(60, c), c["risk_mid"])
-        self.assertEqual(theme.pop_color(50, c), c["risk_mid"])
-        self.assertEqual(theme.pop_color(30, c), c["text"])
-        self.assertEqual(theme.pop_color(None, c), c["subtext"])
+        self.assertEqual(theme.pop_color(None, c), c["text_secondary"])
+
+    def test_low_probability_is_neutral_primary(self):
+        c = theme.colors()
+        self.assertEqual(theme.pop_color(0, c), c["text_primary"])
+        self.assertEqual(theme.pop_color(29, c), c["text_primary"])
+
+    def test_mid_probability_is_info(self):
+        c = theme.colors()
+        self.assertEqual(theme.pop_color(30, c), c["info"])
+        self.assertEqual(theme.pop_color(69, c), c["info"])
+
+    def test_high_probability_is_accent(self):
+        c = theme.colors()
+        self.assertEqual(theme.pop_color(70, c), c["accent"])
+        self.assertEqual(theme.pop_color(100, c), c["accent"])
+
+    def test_never_returns_danger_or_warning(self):
+        c = theme.colors()
+        forbidden = {c["danger"], c["warning"]}
+        for pop in (None, 0, 29, 30, 69, 70, 100):
+            self.assertNotIn(theme.pop_color(pop, c), forbidden, pop)
+
+
+def _relative_luminance(hex_color):
+    """WCAG 2.x 상대 휘도 계산(sRGB -> 선형 -> 가중합)."""
+    hex_color = hex_color.lstrip("#")
+    channels = []
+    for i in (0, 2, 4):
+        v = int(hex_color[i:i + 2], 16) / 255.0
+        channels.append(v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4)
+    r, g, b = channels
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast_ratio(hex_a, hex_b):
+    la, lb = _relative_luminance(hex_a), _relative_luminance(hex_b)
+    lighter, darker = max(la, lb), min(la, lb)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+class ContrastRatioTest(unittest.TestCase):
+    """일반(11~14px) 텍스트 조합은 WCAG AA 기준 4.5:1 이상을 요구한다.
+    text_disabled는 비활성 컨트롤 전용이라 이 기준에서 제외한다(스펙 명시)."""
+
+    def _assert_aa(self, fg_key, bg_key, palette, label):
+        ratio = _contrast_ratio(palette[fg_key], palette[bg_key])
+        self.assertGreaterEqual(ratio, 4.5, f"{label}: {fg_key}/{bg_key} = {ratio:.2f}")
+
+    def test_light_text_on_surface(self):
+        for key in ("text_primary", "text_secondary", "text_tertiary"):
+            self._assert_aa(key, "surface", theme.LIGHT, "light")
+
+    def test_light_tone_on_its_soft_background(self):
+        for tone in ("accent", "success", "warning", "danger", "info"):
+            self._assert_aa(tone, tone + "_soft", theme.LIGHT, "light")
+
+    def test_dark_text_on_surface(self):
+        for key in ("text_primary", "text_secondary", "text_tertiary"):
+            self._assert_aa(key, "surface", theme.DARK, "dark")
+
+    def test_dark_tone_on_its_soft_background(self):
+        for tone in ("accent", "success", "warning", "danger", "info"):
+            self._assert_aa(tone, tone + "_soft", theme.DARK, "dark")
+
+    def test_on_accent_readable_over_accent_both_themes(self):
+        # 버튼처럼 accent를 배경으로 깔고 on_accent로 글자를 쓰는 조합.
+        self._assert_aa("on_accent", "accent", theme.LIGHT, "light")
+        self._assert_aa("on_accent", "accent", theme.DARK, "dark")
 
 
 class ThemeChangeBindingTest(unittest.TestCase):
