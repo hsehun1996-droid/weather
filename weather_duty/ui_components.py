@@ -78,9 +78,9 @@ class StatusPill(QWidget):
         fg, bg = _tone_colors(c, self._tone)
         theme.set_dynamic_property(self, "tone", self._tone)
         self.setStyleSheet(
-            f"StatusPill {{ background-color:{bg}; border-radius:{theme.RADIUS_PILL}px; }}"
+            f"StatusPill {{ background-color:{bg}; border:none; border-radius:{theme.RADIUS_PILL}px; }}"
         )
-        self._label.setStyleSheet(f"color:{fg}; background:transparent;")
+        self._label.setStyleSheet(f"color:{fg}; background:transparent; border:none;")
 
 
 class TagBadge(QLabel):
@@ -111,7 +111,7 @@ class TagBadge(QLabel):
         fg, bg = _tone_colors(c, self._tone)
         theme.set_dynamic_property(self, "tone", self._tone)
         self.setStyleSheet(
-            f"TagBadge {{ color:{fg}; background-color:{bg};"
+            f"TagBadge {{ color:{fg}; background-color:{bg}; border:none;"
             f" border-radius:{theme.RADIUS_SMALL}px; padding:2px {theme.SPACE_2}px; }}"
         )
 
@@ -153,10 +153,10 @@ class InlineBanner(QWidget):
         theme.set_dynamic_property(self, "level", self._level)
         self._glyph_label.setText(glyph)
         self.setStyleSheet(
-            f"InlineBanner {{ background-color:{bg}; border-radius:{theme.RADIUS_PANEL}px; }}"
+            f"InlineBanner {{ background-color:{bg}; border:none; border-radius:{theme.RADIUS_PANEL}px; }}"
         )
-        self._glyph_label.setStyleSheet(f"color:{fg}; background:transparent;")
-        self._text_label.setStyleSheet(f"color:{fg}; background:transparent;")
+        self._glyph_label.setStyleSheet(f"color:{fg}; background:transparent; border:none;")
+        self._text_label.setStyleSheet(f"color:{fg}; background:transparent; border:none;")
 
 
 class SectionHeader(QWidget):
@@ -202,9 +202,9 @@ class SectionHeader(QWidget):
 
     def _refresh_style(self):
         c = theme.colors()
-        self._title_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent;")
+        self._title_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent; border:none;")
         if self._subtitle_label is not None:
-            self._subtitle_label.setStyleSheet(f"color:{c['text_tertiary']}; background:transparent;")
+            self._subtitle_label.setStyleSheet(f"color:{c['text_tertiary']}; background:transparent; border:none;")
 
 
 class MetricBlock(QWidget):
@@ -237,8 +237,8 @@ class MetricBlock(QWidget):
 
     def _refresh_style(self):
         c = theme.colors()
-        self._value_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent;")
-        self._caption_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
+        self._value_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent; border:none;")
+        self._caption_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent; border:none;")
 
 
 class EmptyState(QWidget):
@@ -317,14 +317,14 @@ class EmptyState(QWidget):
         c = theme.colors()
         if self._tone == "warning":
             self.setStyleSheet(
-                f"EmptyState {{ background-color:{c['warning_soft']}; border-radius:{theme.RADIUS_PANEL}px; }}"
+                f"EmptyState {{ background-color:{c['warning_soft']}; border:none; border-radius:{theme.RADIUS_PANEL}px; }}"
             )
             title_color, desc_color = c["text_primary"], c["text_secondary"]
         else:
             self.setStyleSheet("EmptyState { background-color:transparent; }")
             title_color, desc_color = c["text_secondary"], c["text_tertiary"]
-        self._title_label.setStyleSheet(f"color:{title_color}; background:transparent;")
-        self._desc_label.setStyleSheet(f"color:{desc_color}; background:transparent;")
+        self._title_label.setStyleSheet(f"color:{title_color}; background:transparent; border:none;")
+        self._desc_label.setStyleSheet(f"color:{desc_color}; background:transparent; border:none;")
 
 
 class IconActionButton(TransparentToolButton):
@@ -417,7 +417,7 @@ class LoadingState(QWidget):
     def _refresh_style(self):
         c = theme.colors()
         self.setStyleSheet("LoadingState { background-color:transparent; }")
-        self._title_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
+        self._title_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent; border:none;")
 
 
 class DialogHeader(QWidget):
@@ -455,8 +455,8 @@ class DialogHeader(QWidget):
 
     def _refresh_style(self):
         c = theme.colors()
-        self._title_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent;")
-        self._desc_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
+        self._title_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent; border:none;")
+        self._desc_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent; border:none;")
 
 
 class DialogFooter(QWidget):
@@ -557,11 +557,11 @@ class FormField(QWidget):
 
     def _refresh_style(self):
         c = theme.colors()
-        self._label.setStyleSheet(f"color:{c['text_primary']}; background:transparent;")
+        self._label.setStyleSheet(f"color:{c['text_primary']}; background:transparent; border:none;")
         if self._required_mark is not None:
-            self._required_mark.setStyleSheet(f"color:{c['danger']}; background:transparent;")
+            self._required_mark.setStyleSheet(f"color:{c['danger']}; background:transparent; border:none;")
         helper_color = c["danger"] if self._is_error else c["text_tertiary"]
-        self._helper_label.setStyleSheet(f"color:{helper_color}; background:transparent;")
+        self._helper_label.setStyleSheet(f"color:{helper_color}; background:transparent; border:none;")
 
 
 class ForecastRow(QFrame):
@@ -660,7 +660,7 @@ class ForecastRow(QFrame):
     def _refresh_style(self):
         c = theme.colors()
         self.setStyleSheet(
-            f"ForecastRow {{ background-color:transparent; border-radius:{theme.RADIUS_CONTROL}px; }}"
+            f"ForecastRow {{ background-color:transparent; border:none; border-radius:{theme.RADIUS_CONTROL}px; }}"
             f"ForecastRow:hover {{ background-color:{c['surface_hover']}; }}"
         )
         for label, color_key in (
@@ -670,4 +670,4 @@ class ForecastRow(QFrame):
             (self._temp_label, "text_primary"),
             (self._chevron_label, "text_tertiary"),
         ):
-            label.setStyleSheet(f"color:{c[color_key]}; background:transparent;")
+            label.setStyleSheet(f"color:{c[color_key]}; background:transparent; border:none;")

@@ -65,7 +65,9 @@ def _pcp_display_text(day):
     if pcp:
         return pcp
     if day.get("source") == "중기예보":
-        return "중기예보(강수량 미제공)"
+        # 뱃지 폭에 비해 문구가 길면 "중기예보(강..."처럼 잘려 보여, 중기예보는
+        # 강수량을 제공하지 않는다는 걸 이미 아는 사용자 기준으로 짧게 줄인다.
+        return "중기예보"
     return "강수없음" if day.get("pop") is not None else "-"
 
 
@@ -238,7 +240,7 @@ class _ThemedDialog(QDialog):
 
     def _refresh_background(self):
         c = theme.colors()
-        self.setStyleSheet(f"QDialog {{ background-color:{c['background']}; }}")
+        self.setStyleSheet(f"QDialog {{ background-color:{c['background']}; border:none; }}")
         for callback in getattr(self, "_extra_theme_refresh", []):
             callback()
 
@@ -281,7 +283,7 @@ class HourlyDetailDialog(_ThemedDialog):
         def _restyle_summary_frame():
             sc = theme.colors()
             summary_frame.setStyleSheet(
-                f"QFrame {{ background-color:{sc['surface_alt']}; border-radius:{theme.RADIUS_PANEL}px; }}"
+                f"QFrame {{ background-color:{sc['surface_alt']}; border:none; border-radius:{theme.RADIUS_PANEL}px; }}"
             )
 
         _restyle_summary_frame()
@@ -532,7 +534,7 @@ class RegionManagerDialog(_ThemedDialog):
             def _restyle_row(row=row, is_favorite=is_favorite):
                 rc = theme.colors()
                 bg = rc["surface_selected"] if is_favorite else "transparent"
-                row.setStyleSheet(f"QFrame {{ background-color:{bg}; border-radius:{theme.RADIUS_CONTROL}px; }}")
+                row.setStyleSheet(f"QFrame {{ background-color:{bg}; border:none; border-radius:{theme.RADIUS_CONTROL}px; }}")
 
             _restyle_row()
             self._result_theme_refresh.append(_restyle_row)
@@ -632,7 +634,7 @@ class CustomRegionForm(_ThemedDialog):
 
     def _refresh_hint_style(self):
         c = theme.colors()
-        self._hint_label.setStyleSheet(f"color:{c['text_tertiary']}; background:transparent;")
+        self._hint_label.setStyleSheet(f"color:{c['text_tertiary']}; background:transparent; border:none;")
 
     def _save(self):
         name = self.name_edit.text().strip()
@@ -771,7 +773,7 @@ class BranchRangeDialog(_ThemedDialog):
         def _restyle_pickers():
             pc = theme.colors()
             for hdr in (self._date_hdr, self._start_hdr, self._end_hdr):
-                hdr.setStyleSheet(f"color:{pc['text_secondary']}; background:transparent;")
+                hdr.setStyleSheet(f"color:{pc['text_secondary']}; background:transparent; border:none;")
 
         _restyle_pickers()
         self._on_theme_refresh(_restyle_pickers)
@@ -890,7 +892,7 @@ class BranchRangeDialog(_ThemedDialog):
 
         def _restyle_header(header=header):
             hc = theme.colors()
-            header.setStyleSheet(f"color:{hc['text_secondary']}; background:transparent;")
+            header.setStyleSheet(f"color:{hc['text_secondary']}; background:transparent; border:none;")
 
         _restyle_header()
         self._result_theme_refresh.append(_restyle_header)
@@ -918,9 +920,9 @@ class BranchRangeDialog(_ThemedDialog):
                 rc = theme.colors()
                 bg = rc["accent_soft"] if is_best else "transparent"
                 fg = rc["accent"] if is_best else rc["text_primary"]
-                row.setStyleSheet(f"QFrame {{ background-color:{bg}; border-radius:{theme.RADIUS_CONTROL}px; }}")
-                name_label.setStyleSheet(f"color:{fg}; background:transparent;")
-                value_label.setStyleSheet(f"color:{fg}; background:transparent;")
+                row.setStyleSheet(f"QFrame {{ background-color:{bg}; border:none; border-radius:{theme.RADIUS_CONTROL}px; }}")
+                name_label.setStyleSheet(f"color:{fg}; background:transparent; border:none;")
+                value_label.setStyleSheet(f"color:{fg}; background:transparent; border:none;")
 
             _restyle_result_row()
             self._result_theme_refresh.append(_restyle_result_row)
@@ -1099,7 +1101,7 @@ class BranchManagerDialog(_ThemedDialog):
 
         def _restyle_name_label(name_label=name_label):
             nc = theme.colors()
-            name_label.setStyleSheet(f"color:{nc['text_primary']}; background:transparent;")
+            name_label.setStyleSheet(f"color:{nc['text_primary']}; background:transparent; border:none;")
 
         _restyle_name_label()
         self._right_theme_refresh.append(_restyle_name_label)
@@ -1141,7 +1143,7 @@ class BranchManagerDialog(_ThemedDialog):
 
                 def _restyle_region_label(region_label=region_label):
                     rc = theme.colors()
-                    region_label.setStyleSheet(f"color:{rc['text_primary']}; background:transparent;")
+                    region_label.setStyleSheet(f"color:{rc['text_primary']}; background:transparent; border:none;")
 
                 _restyle_region_label()
                 self._right_theme_refresh.append(_restyle_region_label)
@@ -1377,11 +1379,11 @@ class WeatherDutyApp(QMainWindow):
         title_col.setSpacing(0)
         title_label = QLabel("기상 근무 모니터", header)
         title_label.setFont(theme.font(22, QFont.Weight.DemiBold))
-        title_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent;")
+        title_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent; border:none;")
         title_col.addWidget(title_label)
         subtitle_label = QLabel("폭염 · 풍수해 · 제설", header)
         subtitle_label.setFont(theme.font_role("caption"))
-        subtitle_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
+        subtitle_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent; border:none;")
         title_col.addWidget(subtitle_label)
         header_layout.addLayout(title_col)
 
@@ -1449,7 +1451,7 @@ class WeatherDutyApp(QMainWindow):
         header_row.setSpacing(theme.SPACE_2)
         sidebar_title = QLabel("즐겨찾기 지역", sidebar)
         sidebar_title.setFont(theme.font_role("card_title"))
-        sidebar_title.setStyleSheet(f"color:{c['text_primary']}; background:transparent;")
+        sidebar_title.setStyleSheet(f"color:{c['text_primary']}; background:transparent; border:none;")
         header_row.addWidget(sidebar_title)
         header_row.addStretch(1)
         edit_btn = uic.IconActionButton(FluentIcon.EDIT, tooltip="즐겨찾기 편집", parent=sidebar)
@@ -1556,9 +1558,10 @@ class WeatherDutyApp(QMainWindow):
         # ---------- Hero surface ----------
         hero = QFrame(parent)
         hero.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # surface 배경만으로도 background(페이지)와 구분되므로, 테두리는 빼서
+        # 지역명/현재 기온을 감싸는 박스 느낌을 없앤다.
         hero.setStyleSheet(
-            f"QFrame {{ background-color:{c['surface']}; border:1px solid {c['border_subtle']};"
-            f" border-radius:{theme.RADIUS_CARD}px; }}"
+            f"QFrame {{ background-color:{c['surface']}; border:none; border-radius:{theme.RADIUS_CARD}px; }}"
         )
         hero_layout = QVBoxLayout(hero)
         hero_layout.setContentsMargins(
@@ -1573,7 +1576,7 @@ class WeatherDutyApp(QMainWindow):
         self.region_name_label = QLabel("즐겨찾기 지역을 선택하세요", hero)
         self.region_name_label.setFont(theme.font_role("page_title"))
         self.region_name_label.setWordWrap(True)
-        self.region_name_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent;")
+        self.region_name_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent; border:none;")
         self.region_name_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         top_row.addWidget(self.region_name_label, 1)
 
@@ -1594,11 +1597,11 @@ class WeatherDutyApp(QMainWindow):
         temp_col.setSpacing(theme.SPACE_1)
         temp_caption = QLabel("현재 기온", hero)
         temp_caption.setFont(theme.font_role("caption"))
-        temp_caption.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
+        temp_caption.setStyleSheet(f"color:{c['text_secondary']}; background:transparent; border:none;")
         temp_col.addWidget(temp_caption)
         self.temp_label = QLabel("-℃", hero)
         self.temp_label.setFont(theme.font_role("metric_display"))
-        self.temp_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent;")
+        self.temp_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent; border:none;")
         temp_col.addWidget(self.temp_label)
         metrics_row.addLayout(temp_col)
 
@@ -1606,11 +1609,11 @@ class WeatherDutyApp(QMainWindow):
         rain_col.setSpacing(theme.SPACE_1)
         rain_caption = QLabel("1시간 강수", hero)
         rain_caption.setFont(theme.font_role("caption"))
-        rain_caption.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
+        rain_caption.setStyleSheet(f"color:{c['text_secondary']}; background:transparent; border:none;")
         rain_col.addWidget(rain_caption)
         self.rain_label = QLabel("-mm", hero)
         self.rain_label.setFont(theme.font(22, QFont.Weight.DemiBold))
-        self.rain_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent;")
+        self.rain_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent; border:none;")
         rain_col.addWidget(self.rain_label)
         metrics_row.addLayout(rain_col)
 
@@ -1622,7 +1625,7 @@ class WeatherDutyApp(QMainWindow):
         self._error_banner_frame = QFrame(hero)
         self._error_banner_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._error_banner_frame.setStyleSheet(
-            f"QFrame {{ background-color:{c['danger_soft']}; border-radius:{theme.RADIUS_PANEL}px; }}"
+            f"QFrame {{ background-color:{c['danger_soft']}; border:none; border-radius:{theme.RADIUS_PANEL}px; }}"
         )
         error_banner_layout = QVBoxLayout(self._error_banner_frame)
         error_banner_layout.setContentsMargins(
@@ -1631,12 +1634,12 @@ class WeatherDutyApp(QMainWindow):
         error_banner_layout.setSpacing(theme.SPACE_1)
         error_title = QLabel("⚠ 데이터 조회 오류", self._error_banner_frame)
         error_title.setFont(theme.font_role("label"))
-        error_title.setStyleSheet(f"color:{c['danger']}; background:transparent;")
+        error_title.setStyleSheet(f"color:{c['danger']}; background:transparent; border:none;")
         error_banner_layout.addWidget(error_title)
         self.error_label = QLabel("", self._error_banner_frame)
         self.error_label.setFont(theme.font_role("caption"))
         self.error_label.setWordWrap(True)
-        self.error_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
+        self.error_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent; border:none;")
         error_banner_layout.addWidget(self.error_label)
         hero_layout.addWidget(self._error_banner_frame)
         self._error_banner_frame.setVisible(False)
@@ -1694,10 +1697,10 @@ class WeatherDutyApp(QMainWindow):
         else:
             bg, dot, text = c["success_soft"], c["success"], c["text_secondary"]
         self._warning_banner_frame.setStyleSheet(
-            f"QFrame {{ background-color:{bg}; border-radius:{theme.RADIUS_PANEL}px; }}"
+            f"QFrame {{ background-color:{bg}; border:none; border-radius:{theme.RADIUS_PANEL}px; }}"
         )
         self._warning_dot.setStyleSheet(f"background-color:{dot}; border-radius:4px;")
-        self.warning_banner.setStyleSheet(f"color:{text}; background:transparent;")
+        self.warning_banner.setStyleSheet(f"color:{text}; background:transparent; border:none;")
 
     def _build_summary_widgets(self, parent):
         """즐겨찾기 종합보기: 제목/지사 관리 버튼 -> 가로 스크롤 날짜 선택 ->
@@ -1734,11 +1737,11 @@ class WeatherDutyApp(QMainWindow):
         date_bar_layout.setSpacing(theme.SPACE_3)
         date_hdr = QLabel("날짜", date_bar)
         date_hdr.setFont(theme.font_role("label"))
-        date_hdr.setStyleSheet(f"color:{c['text_secondary']}; background:transparent;")
+        date_hdr.setStyleSheet(f"color:{c['text_secondary']}; background:transparent; border:none;")
         date_bar_layout.addWidget(date_hdr)
 
         self.summary_date_selector = SegmentedWidget(date_bar)
-        self.summary_date_selector.setStyleSheet("background:transparent;")
+        self.summary_date_selector.setStyleSheet("background:transparent; border:none;")
         date_scroll = SingleDirectionScrollArea(date_bar, orient=Qt.Orientation.Horizontal)
         date_scroll.setWidget(self.summary_date_selector)
         date_scroll.setWidgetResizable(True)
@@ -1805,15 +1808,20 @@ class WeatherDutyApp(QMainWindow):
         # (960px 좁은 화면에서 지역명이 통째로 사라지는 문제로 실측됨),
         # 모든 열에 최소 폭을 강제해 그 이하로는 좁아지지 않고 가로 스크롤로 넘어가게 한다.
         header.setMinimumSectionSize(64)
+        # 폭을 먼저 잡아두고 나서 Stretch를 걸어야 두 Stretch 열(지역/강수량)이
+        # 남는 공간을 이 비율로 나눠 가진다 - 순서가 바뀌면 지역 열 혼자 남는
+        # 공간을 전부 가져가 강수량 열이 넓은 화면에서도 계속 좁게 남아
+        # "★ 65mm(15시 최대)" 같은 문구가 잘리는 문제가 있었다.
+        self.summary_table.setColumnWidth(0, 100)
+        self.summary_table.setColumnWidth(1, 220)
+        self.summary_table.setColumnWidth(5, 160)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
-        self.summary_table.setColumnWidth(0, 100)
-        self.summary_table.setColumnWidth(5, 118)
         self._summary_content_stack.addWidget(self.summary_table)
 
         self._summary_empty_state = uic.EmptyState("표시할 데이터가 없습니다", "", self._summary_content_stack)
@@ -2167,22 +2175,34 @@ class WeatherDutyApp(QMainWindow):
         return all_dates
 
     def _update_summary_date_selector(self, all_dates):
-        self.summary_date_selector.clear()
         if not all_dates:
+            self.summary_date_selector.clear()
+            self._summary_date_selector_dates = []
             return
 
         today_str = datetime.datetime.now().strftime("%Y%m%d")
+        if self.selected_summary_date not in all_dates:
+            # 지난 실측 날짜가 목록 맨 앞에 추가되므로, 처음 열 때는 과거 날짜가 아니라
+            # 오늘(또는 오늘이 없으면 가장 빠른 미래 날짜)을 기본으로 보여준다.
+            self.selected_summary_date = next((d for d in all_dates if d >= today_str), all_dates[0])
+
+        # 날짜 목록 자체가 안 바뀌었으면(가장 흔한 경우 - 날짜 칩만 클릭) 위젯을
+        # 통째로 지우고 다시 만들지 않는다. 매번 clear()+재생성하면 새로 만든
+        # 항목의 레이아웃 지오메트리가 아직 확정되지 않은 상태에서
+        # setCurrentItem()이 실행되어, 선택 표시(흰 박스)가 애니메이션 목표
+        # 위치를 잘못 계산해 이전 위치에 멈춰 있는 것처럼 보이는 문제가 있었다.
+        if all_dates == getattr(self, "_summary_date_selector_dates", None):
+            self.summary_date_selector.setCurrentItem(self.selected_summary_date)
+            return
+
+        self.summary_date_selector.clear()
         for date_str in all_dates:
             # routeKey(date_str)는 그대로 두고 표시 문구만 "오늘 08/28" 형태로.
             chip_text = _summary_date_chip_text(date_str, today_str)
             self.summary_date_selector.addItem(
                 date_str, chip_text, onClick=lambda _c=False, d=date_str: self._on_summary_date_selected(d)
             )
-
-        if self.selected_summary_date not in all_dates:
-            # 지난 실측 날짜가 목록 맨 앞에 추가되므로, 처음 열 때는 과거 날짜가 아니라
-            # 오늘(또는 오늘이 없으면 가장 빠른 미래 날짜)을 기본으로 보여준다.
-            self.selected_summary_date = next((d for d in all_dates if d >= today_str), all_dates[0])
+        self._summary_date_selector_dates = list(all_dates)
         self.summary_date_selector.setCurrentItem(self.selected_summary_date)
 
     def _render_summary(self, favorites):
