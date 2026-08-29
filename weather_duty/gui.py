@@ -1402,7 +1402,15 @@ class WeatherDutyApp(QMainWindow):
         self.view_seg.addItem("detail", "지역별 상세", onClick=lambda: self._set_view_mode("detail"))
         self.view_seg.addItem("summary", "즐겨찾기 종합", onClick=lambda: self._set_view_mode("summary"))
         self.view_seg.setCurrentItem(self.view_mode)
-        view_seg_wrap_layout.addWidget(self.view_seg)
+        # 정렬 플래그 없이 addWidget()만 쓰면 QHBoxLayout이 SegmentedWidget을
+        # wrap의 전체 높이(64px)까지 세로로 늘린다 - 그러면 내부 항목은 그
+        # 늘어난 높이 안에서 다시 세로 중앙정렬되어 실제 y좌표가 0이 아니게
+        # 되는데, qfluentwidgets의 선택 표시(흰 박스)는 SegmentedWidget 자신의
+        # 높이를 기준으로 그려서 늘 위쪽에 그려지는 것처럼 보인다(실측:
+        # 늘어난 상태에서 item.geometry()=y=17, 흰 박스는 y=0~30에 그려짐).
+        # AlignVCenter를 주면 SegmentedWidget이 sizeHint 높이 그대로(늘어나지
+        # 않고) 세로 중앙에 놓여 item.y()가 0이 되고 문제가 사라진다.
+        view_seg_wrap_layout.addWidget(self.view_seg, 0, Qt.AlignmentFlag.AlignVCenter)
         view_seg_wrap_layout.addStretch(1)
         header_layout.addWidget(view_seg_wrap)
 
@@ -1748,6 +1756,10 @@ class WeatherDutyApp(QMainWindow):
         date_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         date_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         date_scroll.setFixedHeight(theme.CONTROL_HEIGHT_LARGE)
+        # summary_date_selector는 자연 높이(sizeHint)로 고정되므로(아래
+        # _update_summary_date_selector에서 setMaximumHeight), 이 44px
+        # 뷰포트보다 낮아진 만큼 세로로 중앙 정렬한다.
+        date_scroll.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         date_scroll.setStyleSheet("QScrollArea { border:none; background:transparent; }")
         date_bar_layout.addWidget(date_scroll, 1)
         layout.addWidget(date_bar)
@@ -2203,6 +2215,16 @@ class WeatherDutyApp(QMainWindow):
                 date_str, chip_text, onClick=lambda _c=False, d=date_str: self._on_summary_date_selected(d)
             )
         self._summary_date_selector_dates = list(all_dates)
+        # SingleDirectionScrollArea가 setWidgetResizable(True)로 이 위젯을
+        # 스크롤 뷰포트 높이(44px)까지 늘리면, 내부 항목이 그 늘어난 높이
+        # 안에서 다시 세로 중앙정렬되어 y좌표가 0이 아니게 되는데
+        # qfluentwidgets의 선택 표시(흰 박스)는 위젯 자신의 높이 기준(y=0)
+        # 으로 그려서 어긋나 보인다 - 자연 높이로 최대 높이를 고정해 늘어나지
+        # 않게 하고, 대신 스크롤 영역 쪽(_build_summary_widgets)에서 세로
+        # 중앙 정렬한다.
+        natural_height = self.summary_date_selector.sizeHint().height()
+        if natural_height > 0:
+            self.summary_date_selector.setMaximumHeight(natural_height)
         self.summary_date_selector.setCurrentItem(self.selected_summary_date)
 
     def _render_summary(self, favorites):
