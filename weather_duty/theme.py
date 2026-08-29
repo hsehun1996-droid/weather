@@ -14,7 +14,7 @@
 import os
 
 from PySide6.QtGui import QFont, QFontDatabase
-from qfluentwidgets import Theme, isDarkTheme, qconfig, setTheme, setThemeColor
+from qfluentwidgets import Theme, isDarkTheme, qconfig, setTheme, setThemeColor, themeColor
 
 _ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
 _FONTS_DIR = os.path.join(_ASSETS_DIR, "fonts")
@@ -31,14 +31,16 @@ LIGHT = dict(
     surface_elevated="#FFFFFF", surface_hover="#EAF0F6", surface_pressed="#E2E8F0",
     surface_selected="#EAF0FF",
     border_subtle="#E3E8EF", border_strong="#C9D2DE", divider="#E8ECF2",
-    text_primary="#17202A", text_secondary="#5E6B7A", text_tertiary="#8793A2",
+    text_primary="#17202A", text_secondary="#5E6B7A", text_tertiary="#687586",
     text_disabled="#B2BBC7", text_inverse="#FFFFFF",
-    accent="#4F6BED", accent_hover="#4058C7", accent_pressed="#344AB3",
-    accent_soft="#EEF2FF", on_accent="#FFFFFF", focus="#4F6BED",
-    success="#1F8A5B", success_soft="#EAF8F1",
-    warning="#B87503", warning_soft="#FFF5DE",
-    danger="#D64545", danger_soft="#FDECEC",
-    info="#2F6FED", info_soft="#EAF2FF",
+    # WCAG 4.5:1 대비 확보를 위해 이전보다 진하게 조정한 값(검증:
+    # weather_duty/tests/test_theme.py의 ContrastRatioTest 참고).
+    accent="#3F57D6", accent_hover="#35479E", accent_pressed="#2B3A80",
+    accent_soft="#EEF2FF", on_accent="#FFFFFF", focus="#3F57D6",
+    success="#157347", success_soft="#EAF8F1",
+    warning="#8A5700", warning_soft="#FFF5DE",
+    danger="#B83232", danger_soft="#FDECEC",
+    info="#2458C6", info_soft="#EAF2FF",
     overlay="rgba(15, 23, 42, 0.42)",
 )
 
@@ -132,13 +134,26 @@ ICON_SIZE_DEFAULT = 18
 ICON_SIZE_LARGE = 20
 
 HEADER_HEIGHT = 64
+# 창 폭이 최소 크기(960px)에 가까워지면 부제(subtitle)만 숨겨 제목·화면전환·
+# 상태 영역이 겹치지 않게 한다(제목 자체는 항상 보임) - 최소 크기보다 살짝
+# 여유를 두어 정확히 960px에서부터가 아니라 조금 위에서 미리 정리된다.
+HEADER_COMPACT_BREAKPOINT = 1050
 FORECAST_ROW_HEIGHT = 64
+FORECAST_ROW_HEIGHT_COMPACT = 78
+FORECAST_ROW_COMPACT_BREAKPOINT = 760
 TABLE_HEADER_HEIGHT = 40
 TABLE_ROW_HEIGHT = 44
 
 SIDEBAR_MIN_WIDTH = 220
 SIDEBAR_DEFAULT_WIDTH = 236
 SIDEBAR_MAX_WIDTH = 280
+# 사이드바 접힘 상태에서 남기는 폭(접기/펼치기 버튼만 보이는 좁은 레일).
+SIDEBAR_COLLAPSED_WIDTH = 48
+
+# QSplitter는 손잡이의 시각 두께와 마우스 히트 영역이 같은 값(handleWidth)이라
+# 기존 SPACE_1(4px)은 잡기 어려웠다 - 마우스로 잡기 쉽도록 살짝 넓히고,
+# hover 시 배경색으로 위치를 알려준다(스타일은 _build_layout에서 적용).
+SPLITTER_HANDLE_WIDTH = 6
 
 APP_CONTENT_MARGIN = 24
 CARD_PADDING = 20
@@ -178,8 +193,20 @@ def init_app_theme():
 def colors():
     """현재 라이트/다크 모드에 맞는 색상 토큰 dict를 반환한다.
     새 토큰(background, surface, text_primary, ...)과 예전 키(bg, card, text, ...)가
-    같은 값으로 함께 들어 있어 신규/기존 호출부 어느 쪽에서 조회해도 안전하다."""
-    return _DARK_RESOLVED if isDarkTheme() else _LIGHT_RESOLVED
+    같은 값으로 함께 들어 있어 신규/기존 호출부 어느 쪽에서 조회해도 안전하다.
+
+    accent/focus는 LIGHT/DARK 딕셔너리에 각각 하드코딩해 두는 대신 매번
+    qfluentwidgets.themeColor()(공식 공개 API)로 다시 읽어온다 - 이 값이
+    PrimaryPushButton, SegmentedWidget 선택 표시 등 qfluentwidgets 자체
+    위젯이 실제로 쓰는 강조색과 동일한 source of truth라, 커스텀 스타일과
+    라이브러리 기본 위젯의 강조색이 라이트/다크 어느 쪽에서도 어긋나지
+    않는다(init_app_theme()이 앱 시작 시 setThemeColor(ACCENT_SEED)로
+    이 값의 기준을 이미 맞춰 둔다)."""
+    resolved = dict(_DARK_RESOLVED if isDarkTheme() else _LIGHT_RESOLVED)
+    live_accent = themeColor().name().upper()
+    resolved["accent"] = live_accent
+    resolved["focus"] = live_accent
+    return resolved
 
 
 def on_theme_changed(slot):
@@ -276,11 +303,14 @@ def font_role(role):
 
 
 def pop_color(pop, c):
-    """강수확률에 따른 강조 색(적당히 높으면 경고색으로)."""
+    """강수확률에 따른 글자색. 강수확률 자체는 오류도 실제 기상특보도 아니므로
+    danger/warning은 쓰지 않는다(그 색은 데이터 조회 실패·실제 특보 전용이고,
+    "최다 강수"도 이 함수와 무관하게 계속 accent_soft로만 강조한다) - 값의
+    크고 작음만 neutral/info/accent로 구분한다."""
     if pop is None:
-        return c["subtext"]
+        return c["text_secondary"]
     if pop >= 70:
-        return c["risk_high"]
-    if pop >= 50:
-        return c["risk_mid"]
-    return c["text"]
+        return c["accent"]
+    if pop >= 30:
+        return c["info"]
+    return c["text_primary"]

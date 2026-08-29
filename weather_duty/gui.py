@@ -1,27 +1,27 @@
 """폭염/풍수해/제설 근무용 날씨 모니터 - PySide6 + PySide6-Fluent-Widgets(qfluentwidgets) GUI.
 
 서버 없이 단일 실행 파일(개별 프로그램)로 동작하며, 기상청 API를 직접 호출한다.
-디자인은 애플 시스템 설정의 "그래파이트"(무채색) 손잡이색을 참고해 파란색 대신
-회색조 강조색을 쓰는 블랙 앤 화이트 톤으로 맞췄고, 위젯 자체는 PyQt-Fluent-Widgets
-(https://github.com/zhiyiYo/PyQt-Fluent-Widgets)의 카드/세그먼트 컨트롤/토스트
+디자인은 theme.py의 "Calm Operations Dashboard" 토큰 체계(색상/타이포그래피/
+spacing/radius)를 따르는 절제된 톤이고, 위젯 자체는 PyQt-Fluent-Widgets
+(https://github.com/zhiyiYo/PyQt-Fluent-Widgets)의 세그먼트 컨트롤/토스트
 알림 등을 그대로 가져다 쓴다.
 """
 import datetime
 import re
 import threading
 
-from PySide6.QtCore import Qt, QObject, QSize, QTimer, Signal
+from PySide6.QtCore import Qt, QObject, QPointF, QRectF, QSize, QTimer, Signal
 from PySide6.QtGui import QFont, QFontMetrics, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QWidget, QMainWindow, QFrame, QHeaderView, QLabel, QSizePolicy, QVBoxLayout, QHBoxLayout,
-    QDialog, QMessageBox, QInputDialog, QSplitter, QStackedWidget, QTableWidgetItem,
-    QAbstractItemView, QListWidgetItem,
+    QApplication, QWidget, QMainWindow, QFrame, QGridLayout, QHeaderView, QLabel, QSizePolicy,
+    QVBoxLayout, QHBoxLayout, QDialog, QSplitter, QStackedWidget,
+    QTableWidgetItem, QAbstractItemView, QListWidgetItem,
 )
 
 from qfluentwidgets import (
     PushButton, PrimaryPushButton,
     LineEdit, SearchLineEdit, ComboBox, CheckBox, TableWidget, ListWidget,
-    ScrollArea, SingleDirectionScrollArea, CardWidget, SegmentedWidget, InfoBar, InfoBarPosition,
+    ScrollArea, SingleDirectionScrollArea, SegmentedWidget, InfoBar, InfoBarPosition,
     FluentIcon, SystemThemeListener,
 )
 
@@ -57,7 +57,9 @@ def _pcp_peak_hour_text(day):
 def _pcp_display_text(day):
     """강수량 칸에 보여줄 문구.
     - 단기예보(강수량 데이터 있음): "3mm" 같은 실제 값 또는 "강수없음"
-    - 중기예보(원래 강수량 없이 확률만 제공): 값이 없는게 API 한계라는 걸 명시
+    - 중기예보(원래 강수량 없이 확률만 제공): 출처 배지가 이미 "중기예보"를
+      보여주므로 값 칸에서는 반복하지 않고 "—"만 쓴다(이유는 tooltip으로 -
+      _pcp_display_tooltip() 참고)
     - 데이터 자체가 없음(조회 중/실패): "-" """
     if day is None:
         return "-"
@@ -65,16 +67,32 @@ def _pcp_display_text(day):
     if pcp:
         return pcp
     if day.get("source") == "중기예보":
-        # 뱃지 폭에 비해 문구가 길면 "중기예보(강..."처럼 잘려 보여, 중기예보는
-        # 강수량을 제공하지 않는다는 걸 이미 아는 사용자 기준으로 짧게 줄인다.
-        return "중기예보"
+        return "—"
     return "강수없음" if day.get("pop") is not None else "-"
+
+
+def _pcp_display_tooltip(day):
+    """_pcp_display_text()가 "—"로 줄인 경우에만 이유를 보완하는 tooltip."""
+    if day is not None and day.get("source") == "중기예보" and not day.get("pcp"):
+        return "중기예보는 강수량을 제공하지 않습니다."
+    return ""
 
 
 def _format_fcst_time(time_str):
     if time_str and len(time_str) >= 2:
         return f"{time_str[:2]}시"
     return time_str or "-"
+
+
+def _format_min_max(min_value, max_value, unit="°"):
+    """최저/최고 계열 값을 "23°/31°" 형태로 표시만 만든다 - 0은 유효한
+    값이라 truthy 검사(`if tmin or tmax`)를 쓰면 "0°"가 "-"로 사라지는
+    버그가 있었다. 값 자체는 그대로 두고 표시 문자열만 만든다."""
+    if min_value is None and max_value is None:
+        return "—"
+    left = f"{min_value}{unit}" if min_value is not None else "—"
+    right = f"{max_value}{unit}" if max_value is not None else "—"
+    return f"{left} / {right}"
 
 
 _WEEKDAY_KO = ["월", "화", "수", "목", "금", "토", "일"]
@@ -94,14 +112,15 @@ def _pretty_date_with_weekday(date_str, today_str=None):
 
 
 def _pop_tone(pop):
-    """강수확률 배지 톤. theme.pop_color()가 이미 쓰는 것과 같은 기준(70/50)을
-    TagBadge 톤 이름으로 옮긴 것뿐 - 새 기준을 만들지 않는다."""
+    """강수확률 배지 톤. 강수확률은 오류도 실제 기상특보도 아니므로
+    danger/warning을 쓰지 않는다(그 톤은 데이터 조회 실패·실제 특보 전용) -
+    theme.pop_color()와 같은 기준(30/70)으로 neutral/info/accent만 쓴다."""
     if pop is None:
         return "neutral"
     if pop >= 70:
-        return "danger"
-    if pop >= 50:
-        return "warning"
+        return "accent"
+    if pop >= 30:
+        return "info"
     return "neutral"
 
 
@@ -111,6 +130,17 @@ def _forecast_row_tooltip(day):
     if day.get("hourly"):
         return "더블클릭하여 시간별 상세보기"
     return "더블클릭하여 상세 정보 보기"
+
+
+def _hourly_detail_reason(day):
+    """시간별(hourly) 데이터가 없는 이유를 한 곳에서만 판단한다 - ForecastRow의
+    상세보기 버튼 tooltip과 HourlyDetailDialog의 안내 문구가 서로 다른 말을
+    하지 않도록 같은 로직을 공유한다."""
+    if day.get("source") == "중기예보":
+        return "중기예보(4일 이후)는 시간별 데이터를 제공하지 않습니다."
+    if day.get("source") == "실측":
+        return "이 날짜의 시간별 실측 자료를 불러오지 못했습니다."
+    return "시간별 데이터가 없습니다."
 
 
 def _summary_date_chip_text(date_str, today_str=None):
@@ -136,33 +166,10 @@ def _summary_date_chip_text(date_str, today_str=None):
     return f"{mmdd} {_WEEKDAY_KO[d.weekday()]}"
 
 
-def qss(color=None, bg=None, radius=None, pad=None, border=None, weight=None):
-    decls = []
-    if color:
-        decls.append(f"color:{color}")
-    if bg is not None:
-        decls.append(f"background-color:{bg}")
-    if radius is not None:
-        decls.append(f"border-radius:{radius}px")
-    if pad:
-        decls.append(f"padding:{pad}")
-    if border:
-        decls.append(f"border:{border}")
-    if weight:
-        decls.append(f"font-weight:{weight}")
-    return ";".join(decls) + ";"
-
-
-def make_card(parent, c, radius=16):
-    card = CardWidget(parent)
-    card.setBorderRadius(radius)
-    return card
-
-
 def toast(parent, kind, title, content):
     """즉시 사라지는 토스트 알림(성공/오류 확인용). 저장/추가 같은 짧은 확인
     메시지에 쓰고, 사용자가 반드시 읽고 넘어가야 하는 입력 검증 오류는
-    QMessageBox를 그대로 쓴다."""
+    각 다이얼로그 안의 InlineBanner로 보여준다(기본 Qt 팝업을 쓰지 않는다)."""
     method = getattr(InfoBar, kind)
     method(
         title=title, content=content, orient=Qt.Orientation.Horizontal,
@@ -185,6 +192,43 @@ def _dot_icon(color_hex, diameter=8):
     return QIcon(pixmap)
 
 
+def _build_app_icon():
+    """앱 창/작업표시줄 아이콘. 외부 이미지 파일이나 새 패키지 없이,
+    accent 색 둥근 사각형 배경 위에 간단한 흰색 해+구름 도형만 QPainter로
+    그린 벡터 아이콘이다(ui_components._draw_weather_icon_pixmap과 같은
+    방식) - 여러 크기를 미리 그려 QIcon에 등록해 두면 OS가 배율에 맞는
+    걸 알아서 골라 쓰므로 고배율(레티나/DPI 150%)에서도 흐려지지 않는다.
+    라이트/다크 테마와 무관하게(작업표시줄 아이콘은 테마 전환에 반응할
+    필요가 없다) LIGHT 팔레트의 accent 색으로 고정한다."""
+    icon = QIcon()
+    accent = _qcolor(theme.LIGHT["accent"])
+    white = _qcolor("#FFFFFF")
+    for size in (16, 24, 32, 48, 64, 128, 256):
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        painter.setBrush(accent)
+        radius = size * 0.22
+        painter.drawRoundedRect(QRectF(0, 0, size, size), radius, radius)
+
+        painter.setBrush(white)
+        sun_r = size * 0.15
+        painter.drawEllipse(QPointF(size * 0.38, size * 0.40), sun_r, sun_r)
+
+        cloud_h = size * 0.22
+        cloud_rect = QRectF(size * 0.28, size * 0.54, size * 0.58, cloud_h)
+        painter.drawRoundedRect(cloud_rect, cloud_h / 2, cloud_h / 2)
+        painter.drawEllipse(QPointF(size * 0.42, size * 0.54), cloud_h * 0.5, cloud_h * 0.5)
+        painter.drawEllipse(QPointF(size * 0.60, size * 0.50), cloud_h * 0.58, cloud_h * 0.58)
+
+        painter.end()
+        icon.addPixmap(pixmap)
+    return icon
+
+
 _STATUS_PILL_LABELS = ["대기", "조회 중", "갱신 완료", "일부 오류", "서비스키 필요"]
 
 
@@ -204,13 +248,25 @@ def _bring_to_front(win):
 def _clear_layout(layout):
     """레이아웃의 자식 위젯을 전부 제거한다. deleteLater()만 하면 실제 삭제가
     다음 이벤트 루프까지 미뤄져 새로 그린 위젯과 잠깐 겹쳐 보이므로, setParent(None)로
-    화면에서 즉시 떼어낸 뒤 삭제를 예약한다."""
+    화면에서 즉시 떼어낸 뒤 삭제를 예약한다.
+
+    addLayout()으로 넣은 중첩 레이아웃(예: 한 줄짜리 QHBoxLayout)은
+    item.widget()이 None을 반환해 예전엔 그냥 건너뛰었는데, 그 안의
+    위젯들은 여전히 부모(다이얼로그)에 매달린 채 화면에서만 안 보일 뿐
+    실제로는 지워지지 않고 남아 있었다 - _render_right_panel()처럼 같은
+    다이얼로그를 열어 둔 채로 여러 번 다시 그리는 화면에서, 이전 줄의
+    위젯이 새로 그린 위젯 위에 그대로 겹쳐 보이는 버그로 실측됨. 중첩
+    레이아웃도 재귀적으로 비워야 한다."""
     while layout.count():
         item = layout.takeAt(0)
         widget = item.widget()
         if widget is not None:
             widget.setParent(None)
             widget.deleteLater()
+            continue
+        sub_layout = item.layout()
+        if sub_layout is not None:
+            _clear_layout(sub_layout)
 
 
 # ---------------------------------------------------------------------------
@@ -274,9 +330,9 @@ class HourlyDetailDialog(_ThemedDialog):
         # ---------- 요약 정보(00~24시 누적/기온/체감) - surface_alt 그룹 하나로 ----------
         summary_bits = [("00~24시 누적 강수량", _pcp_display_text(day))]
         if day.get("tmin") is not None or day.get("tmax") is not None:
-            summary_bits.append(("기온", f"{day.get('tmin', '-')}° / {day.get('tmax', '-')}°"))
+            summary_bits.append(("기온", _format_min_max(day.get("tmin"), day.get("tmax"))))
         if day.get("feels_like_min") is not None:
-            summary_bits.append(("체감", f"{day['feels_like_min']}° / {day['feels_like_max']}°"))
+            summary_bits.append(("체감", _format_min_max(day.get("feels_like_min"), day.get("feels_like_max"))))
         summary_frame = QFrame(self)
         summary_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
@@ -299,12 +355,7 @@ class HourlyDetailDialog(_ThemedDialog):
 
         # ---------- 시간대별 표(또는 시간별 데이터가 없는 이유 안내) ----------
         if not hourly:
-            if day.get("source") == "중기예보":
-                reason = "중기예보(4일 이후)는 기상청이 강수확률만 제공하고,\n3시간 단위 시간별 데이터는 제공하지 않습니다."
-            elif day.get("source") == "실측":
-                reason = "이 날짜의 시간별 실측 자료를 불러오지 못했습니다."
-            else:
-                reason = "시간별 데이터가 없습니다."
+            reason = _hourly_detail_reason(day)
             empty = uic.EmptyState("시간별 데이터가 없습니다", reason, self)
             empty.setMinimumHeight(160)
             outer.addWidget(empty, 1)
@@ -689,7 +740,6 @@ class BranchRangeDialog(_ThemedDialog):
         self.branch_name = branch_name
         self.members = members
         self.reports = reports
-        self.font_title = parent.font_title
         self.font_body = parent.font_body
         self.font_small = parent.font_small
         self.setWindowTitle(f"{branch_name} - 시간대별 누적강수량")
@@ -928,6 +978,67 @@ class BranchRangeDialog(_ThemedDialog):
             self._result_theme_refresh.append(_restyle_result_row)
 
 
+class AddBranchDialog(_ThemedDialog):
+    """새 지사 이름을 입력받는 작은 다이얼로그. 기본 QInputDialog.getText()
+    팝업은 앱 테마를 따르지 않고 빈 이름/중복 이름 검증도 못 해, 이름을
+    입력받고 확인 시점에 InlineBanner로(다이얼로그를 닫지 않고) 오류를
+    보여준다."""
+
+    def __init__(self, parent, existing_names):
+        super().__init__(parent)
+        self.setWindowTitle("새 지사 추가")
+        self._bind_background()
+        self.setMinimumWidth(360)
+        self._existing_names = set(existing_names)
+        self.result_name = None
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(
+            theme.DIALOG_CONTENT_MARGIN, theme.DIALOG_CONTENT_MARGIN,
+            theme.DIALOG_CONTENT_MARGIN, theme.DIALOG_CONTENT_MARGIN,
+        )
+        outer.setSpacing(theme.SPACE_3)
+
+        outer.addWidget(uic.DialogHeader("새 지사 추가", "지사 이름을 입력하세요.", self))
+
+        self._name_edit = LineEdit(self)
+        self._name_edit.setPlaceholderText("지사 이름")
+        self._name_edit.setAccessibleName("지사 이름")
+        self._name_edit.returnPressed.connect(self._on_confirm)
+        outer.addWidget(self._name_edit)
+
+        self._error_banner = uic.InlineBanner("", level="danger", parent=self)
+        self._error_banner.setVisible(False)
+        outer.addWidget(self._error_banner)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        cancel_btn = PushButton("취소", self)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        confirm_btn = PrimaryPushButton("추가", self)
+        confirm_btn.clicked.connect(self._on_confirm)
+        btn_row.addWidget(confirm_btn)
+        outer.addLayout(btn_row)
+
+        self._name_edit.setFocus()
+
+    def _on_confirm(self):
+        name = self._name_edit.text().strip()
+        if not name:
+            self._show_error("지사 이름을 입력하세요.")
+            return
+        if name in self._existing_names:
+            self._show_error(f"'{name}' 지사가 이미 있습니다.")
+            return
+        self.result_name = name
+        self.accept()
+
+    def _show_error(self, text):
+        self._error_banner.set_message(text)
+        self._error_banner.setVisible(True)
+
+
 class BranchManagerDialog(_ThemedDialog):
     """지사(관할 구역) 관리: 지사별로 어떤 즐겨찾기 지역이 속하는지 편집.
     '즐겨찾기 종합 보기'에서 지사 단위로 묶어서 보여주는 데 쓰인다.
@@ -942,7 +1053,10 @@ class BranchManagerDialog(_ThemedDialog):
         super().__init__(parent)
         self.setWindowTitle("지사 관리")
         self._bind_background()
-        self.setMinimumSize(600, 540)
+        # 검색 결과 없음/여러 개 일치 안내(InlineBanner)+후보 목록이 이제
+        # 팝업이 아니라 오른쪽 패널 안에 자리를 차지하므로(Section 14), 예전
+        # 높이(540)로는 그 상태에서 위쪽 지역 목록 영역이 과하게 눌렸다.
+        self.setMinimumSize(600, 620)
         self.on_change = on_change
         self.font_body = parent.font_body
         self.font_small = parent.font_small
@@ -1026,6 +1140,9 @@ class BranchManagerDialog(_ThemedDialog):
             QListWidget::item:hover {{ background-color: {c['surface_hover']}; }}
             QListWidget::item:selected {{
                 background-color: {c['surface_selected']}; color: {c['text_primary']}; font-weight: 500;
+            }}
+            QListWidget::item:focus {{
+                border: {theme.FOCUS_RING_WIDTH}px solid {c['focus']};
             }}
         """)
 
@@ -1156,6 +1273,9 @@ class BranchManagerDialog(_ThemedDialog):
         add_row.setSpacing(theme.SPACE_2)
         search_edit = LineEdit(self)
         search_edit.setPlaceholderText("즐겨찾기 지역 검색해서 추가")
+        search_edit.returnPressed.connect(
+            lambda b=branch_name, e=search_edit: self._add_region_from_search(b, e)
+        )
         add_row.addWidget(search_edit, 1)
         add_region_btn = PushButton("추가", self)
         add_region_btn.clicked.connect(
@@ -1164,24 +1284,55 @@ class BranchManagerDialog(_ThemedDialog):
         add_row.addWidget(add_region_btn)
         self.right_layout.addLayout(add_row)
 
+        # 검색 결과 없음/여러 개 일치를 기본 QMessageBox 팝업 대신 인라인으로
+        # 보여준다 - "여러 개 일치"는 첫 번째를 임의로 골라 추가하지 않고
+        # 후보를 목록으로 보여줘 사용자가 직접 고르게 한다.
+        self._region_search_banner = uic.InlineBanner("", level="warning", parent=self)
+        self._region_search_banner.setVisible(False)
+        self.right_layout.addWidget(self._region_search_banner)
+
+        self._region_search_candidates = ListWidget(self)
+        self._region_search_candidates.setFrameShape(QFrame.Shape.NoFrame)
+        self._region_search_candidates.setMaximumHeight(120)
+        self._region_search_candidates.setVisible(False)
+        self._region_search_candidates.itemClicked.connect(self._on_region_candidate_selected)
+        self.right_layout.addWidget(self._region_search_candidates)
+
     def _add_region_from_search(self, branch_name, search_edit):
+        self._region_search_candidates.clear()
+        self._region_search_candidates.setVisible(False)
         query = search_edit.text().strip()
         if not query:
+            self._region_search_banner.setVisible(False)
             return
         favorites = config.get_favorites()
         matches = [n for n in favorites if query in n]
         if not matches:
-            QMessageBox.information(
-                self, "검색 결과 없음", "일치하는 즐겨찾기 지역이 없습니다. 먼저 즐겨찾기에 추가하세요."
+            self._region_search_banner.set_message(
+                "일치하는 즐겨찾기 지역이 없습니다. 먼저 즐겨찾기에 추가하세요.", level="warning",
             )
+            self._region_search_banner.setVisible(True)
             return
         if len(matches) > 1:
-            QMessageBox.information(
-                self, "여러 개 일치",
-                "검색어와 일치하는 지역이 여러 개입니다:\n" + "\n".join(matches[:10]) + "\n더 구체적으로 입력하세요.",
+            self._region_search_banner.set_message(
+                "검색어와 일치하는 지역이 여러 개입니다. 추가할 지역을 아래 목록에서 선택하세요.",
+                level="info",
             )
+            self._region_search_banner.setVisible(True)
+            for name in matches:
+                item = QListWidgetItem(name)
+                item.setData(Qt.ItemDataRole.UserRole, (branch_name, name))
+                self._region_search_candidates.addItem(item)
+            self._region_search_candidates.setVisible(True)
             return
+        self._region_search_banner.setVisible(False)
         config.add_region_to_branch(branch_name, matches[0])
+        self._render_right_panel()
+        self.on_change()
+
+    def _on_region_candidate_selected(self, item):
+        branch_name, region_name = item.data(Qt.ItemDataRole.UserRole)
+        config.add_region_to_branch(branch_name, region_name)
         self._render_right_panel()
         self.on_change()
 
@@ -1197,14 +1348,15 @@ class BranchManagerDialog(_ThemedDialog):
         self.on_change()
 
     def _add_branch(self):
-        name, ok = QInputDialog.getText(self, "새 지사 추가", "지사 이름:")
-        if not ok or not name.strip():
+        dlg = AddBranchDialog(self, config.get_branches().keys())
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        config.add_branch(name.strip())
-        self.selected_branch = name.strip()
+        name = dlg.result_name
+        config.add_branch(name)
+        self.selected_branch = name
         self._render()
         self.on_change()
-        toast(self.parent(), "success", "지사 추가됨", f"'{name.strip()}' 지사를 추가했습니다.")
+        toast(self.parent(), "success", "지사 추가됨", f"'{name}' 지사를 추가했습니다.")
 
 
 class SettingsDialog(_ThemedDialog):
@@ -1295,12 +1447,10 @@ class WeatherDutyApp(QMainWindow):
         self._theme_listener.start()
 
         self.setWindowTitle("폭염·풍수해·제설 근무 날씨 모니터")
+        self.setWindowIcon(_build_app_icon())
         self.resize(1180, 700)
         self.setMinimumSize(960, 600)
 
-        self.font_display = theme.font(46, QFont.Weight.Bold)
-        self.font_title = theme.font(19, QFont.Weight.Bold)
-        self.font_subtitle = theme.font(14, QFont.Weight.Medium)
         self.font_body = theme.font(13, QFont.Weight.Normal)
         self.font_small = theme.font(11, QFont.Weight.Normal)
 
@@ -1333,6 +1483,18 @@ class WeatherDutyApp(QMainWindow):
         self._theme_listener.wait()
         super().closeEvent(event)
 
+    def resizeEvent(self, event):  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._apply_header_compact_mode(event.size().width())
+
+    def _apply_header_compact_mode(self, window_width):
+        """창 폭이 HEADER_COMPACT_BREAKPOINT 미만이면 헤더 부제만 숨긴다
+        (제목은 항상 그대로 보여준다) - 사이드바/여백을 뺀 콘텐츠 폭이 아니라
+        창 전체 폭 기준으로 판단해도 무방할 만큼 여유(1050px)를 뒀다."""
+        subtitle = getattr(self, "_header_subtitle_label", None)
+        if subtitle is not None:
+            subtitle.setVisible(window_width >= theme.HEADER_COMPACT_BREAKPOINT)
+
     # ---------- style ----------
     def _apply_window_style(self):
         self.centralWidget().setStyleSheet(f"background-color:{theme.colors()['bg']};")
@@ -1343,7 +1505,13 @@ class WeatherDutyApp(QMainWindow):
 
     def _rebuild_ui(self):
         # 팔레트가 바뀌면 위젯을 통째로 다시 만든다 (매번 렌더링 함수가 위젯을
-        # 새로 그리는 이 앱의 구조를 그대로 활용한다).
+        # 새로 그리는 이 앱의 구조를 그대로 활용한다). view_mode/selected_region/
+        # selected_summary_date/sidebar 접힘 상태는 self(WeatherDutyApp
+        # 인스턴스) 자체에 남아 있는 값이라 원래도 안전하지만, 위젯 자체가
+        # 새로 만들어지며 초기화되는 값들(스플리터 크기, 스크롤 위치, 표 컬럼
+        # 폭, 포커스)은 여기서 직접 붙잡아 뒀다가 다시 만든 뒤 되돌린다.
+        state = self._capture_ui_state()
+
         old_central = self.centralWidget()
         central = QWidget(self)
         self.setCentralWidget(central)
@@ -1357,81 +1525,183 @@ class WeatherDutyApp(QMainWindow):
         old_central.deleteLater()
         self._sync_view_mode_widgets()
         self._refresh_current_view()
+        self._restore_ui_state(state)
+
+    def _capture_ui_state(self):
+        """_rebuild_ui() 직전 스냅샷. view_mode 등 self에 이미 남아 있는 값은
+        다시 캡처하지 않고, 위젯이 새로 만들어지며 사라지는 것들만 담는다:
+        스플리터(사이드바) 크기, 일별예보/종합표 스크롤 위치, 종합표 지사 열
+        폭, 현재 포커스가 놓여 있던(재구성 후에도 이름이 같은) 위젯."""
+        favorites_list = getattr(self, "favorites_list", None)
+        summary_table = getattr(self, "summary_table", None)
+        summary_date_selector = getattr(self, "summary_date_selector", None)
+        forecast_scroll = getattr(self, "forecast_scroll", None)
+        splitter = getattr(self, "_body_splitter", None)
+
+        focus_widget = QApplication.focusWidget()
+        focus_role = None
+        for role, widget in (
+            ("favorites_list", favorites_list),
+            ("summary_table", summary_table),
+            ("summary_date_selector", summary_date_selector),
+        ):
+            if widget is not None and widget is focus_widget:
+                focus_role = role
+                break
+
+        return {
+            "splitter_sizes": splitter.sizes() if splitter is not None else None,
+            "forecast_scroll_value": (
+                forecast_scroll.verticalScrollBar().value() if forecast_scroll is not None else None
+            ),
+            "summary_table_scroll_value": (
+                summary_table.verticalScrollBar().value() if summary_table is not None else None
+            ),
+            "summary_col0_width": (
+                summary_table.columnWidth(0) if summary_table is not None else None
+            ),
+            "focus_role": focus_role,
+        }
+
+    def _restore_ui_state(self, state):
+        """_capture_ui_state()가 찍어 둔 스냅샷을 새로 만들어진 위젯에 되돌린다.
+        사이드바가 접힌 상태라면 스플리터 크기는 _apply_sidebar_collapsed_state()가
+        이미 레일 폭으로 맞춰 뒀으므로 여기서 되돌리지 않는다."""
+        if not state:
+            return
+        splitter = getattr(self, "_body_splitter", None)
+        if splitter is not None and state.get("splitter_sizes") and not getattr(self, "_sidebar_collapsed", False):
+            splitter.setSizes(state["splitter_sizes"])
+
+        summary_table = getattr(self, "summary_table", None)
+        if summary_table is not None and state.get("summary_col0_width"):
+            summary_table.setColumnWidth(0, state["summary_col0_width"])
+
+        role = state.get("focus_role")
+        if role:
+            widget = getattr(self, role, None)
+            if widget is not None:
+                widget.setFocus()
+
+        # 스크롤 위치는 스크롤바 범위(콘텐츠 크기 기준)가 이 시점엔 아직 다음
+        # 레이아웃 패스 전이라 유효하지 않다(범위가 계산되기 전이라 0으로
+        # clamp됨) - 이벤트 루프가 한 번 돌고 레이아웃이 자리 잡은 뒤 적용되도록
+        # 한 틱 미룬다. self를 통해 그 시점 위젯을 다시 찾아, 그 사이 또
+        # 재구성(연속 테마 전환 등)돼 위젯이 이미 없어졌어도 안전하게 넘어간다.
+        forecast_value = state.get("forecast_scroll_value")
+        summary_value = state.get("summary_table_scroll_value")
+
+        def _restore_scroll_positions():
+            try:
+                fc = getattr(self, "forecast_scroll", None)
+                if fc is not None and forecast_value is not None:
+                    fc.verticalScrollBar().setValue(forecast_value)
+                st = getattr(self, "summary_table", None)
+                if st is not None and summary_value is not None:
+                    st.verticalScrollBar().setValue(summary_value)
+            except RuntimeError:
+                pass
+
+        if forecast_value is not None or summary_value is not None:
+            QTimer.singleShot(0, _restore_scroll_positions)
 
     # ---------- layout ----------
     def _build_toolbar(self):
         """상단 헤더: 왼쪽 제목/부제, 가운데 화면 전환, 오른쪽 상태·새로고침·설정.
         즐겨찾기 편집/지사 관리 버튼은 각각 사이드바 헤더와 종합보기 화면
-        제목으로 옮겼다(콜백은 그대로 유지, _open_region_manager/_open_branch_manager)."""
+        제목으로 옮겼다(콜백은 그대로 유지, _open_region_manager/_open_branch_manager).
+
+        3분할 QGridLayout(왼쪽/가운데/오른쪽)을 쓴다 - 이전엔 가운데를
+        addStretch(1)로만 감쌌는데, 그건 왼쪽(제목)과 오른쪽(상태+버튼들) 사이
+        "남는 공간"만 절반씩 나누는 것이라 두 폭이 다르면 가운데가 창의 실제
+        중앙이 아니라 한쪽으로 치우쳐 보였다. 왼쪽/오른쪽 칸을 서로 같은
+        고정 폭(둘 중 더 넓은 쪽 기준)으로 맞춰야 가운데 SegmentedWidget이
+        내용물 폭 차이와 무관하게 항상 창의 실제 중앙에 온다."""
         c = theme.colors()
         header = QWidget(self)
         header.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         header.setFixedHeight(theme.HEADER_HEIGHT)
         header.setStyleSheet(f"background-color:{c['background']};")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(
+        header_grid = QGridLayout(header)
+        header_grid.setContentsMargins(
             theme.APP_CONTENT_MARGIN, 0, theme.APP_CONTENT_MARGIN, 0
         )
-        header_layout.setSpacing(theme.SPACE_4)
+        header_grid.setHorizontalSpacing(theme.SPACE_4)
 
-        title_col = QVBoxLayout()
+        # ---------- 왼쪽: 제목/부제 ----------
+        left_wrap = QWidget(header)
+        title_col = QVBoxLayout(left_wrap)
         title_col.setContentsMargins(0, 0, 0, 0)
         title_col.setSpacing(0)
-        title_label = QLabel("기상 근무 모니터", header)
+        title_label = QLabel("기상 근무 모니터", left_wrap)
         title_label.setFont(theme.font(22, QFont.Weight.DemiBold))
         title_label.setStyleSheet(f"color:{c['text_primary']}; background:transparent; border:none;")
         title_col.addWidget(title_label)
-        subtitle_label = QLabel("폭염 · 풍수해 · 제설", header)
-        subtitle_label.setFont(theme.font_role("caption"))
-        subtitle_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent; border:none;")
-        title_col.addWidget(subtitle_label)
-        header_layout.addLayout(title_col)
+        # 좁은 창(HEADER_COMPACT_BREAKPOINT 미만)에서는 부제만 숨긴다 - 제목은
+        # 항상 보인다(resizeEvent -> _apply_header_compact_mode 참고).
+        self._header_subtitle_label = QLabel("폭염 · 풍수해 · 제설", left_wrap)
+        self._header_subtitle_label.setFont(theme.font_role("caption"))
+        self._header_subtitle_label.setStyleSheet(
+            f"color:{c['text_secondary']}; background:transparent; border:none;"
+        )
+        title_col.addWidget(self._header_subtitle_label)
 
-        header_layout.addStretch(1)
-
-        # SegmentedWidget(Pivot) 내부 레이아웃은 QLayout.SetMinimumSize 제약을 써서
-        # 위젯 자체에 setMinimumWidth를 걸어도 다음 레이아웃 패스에서 콘텐츠 기준
-        # 폭으로 되돌려버린다. 그래서 작은 창에서 폭이 눌리지 않도록, 최소 너비는
-        # 감싸는 빈 컨테이너에 걸고 SegmentedWidget은 그 안에서 가운데 놓는다.
+        # ---------- 가운데: 화면 전환 ----------
         view_seg_wrap = QWidget(header)
-        view_seg_wrap.setMinimumWidth(240)
         view_seg_wrap_layout = QHBoxLayout(view_seg_wrap)
         view_seg_wrap_layout.setContentsMargins(0, 0, 0, 0)
-        view_seg_wrap_layout.addStretch(1)
         self.view_seg = SegmentedWidget(view_seg_wrap)
         self.view_seg.addItem("detail", "지역별 상세", onClick=lambda: self._set_view_mode("detail"))
         self.view_seg.addItem("summary", "즐겨찾기 종합", onClick=lambda: self._set_view_mode("summary"))
         self.view_seg.setCurrentItem(self.view_mode)
         # 정렬 플래그 없이 addWidget()만 쓰면 QHBoxLayout이 SegmentedWidget을
-        # wrap의 전체 높이(64px)까지 세로로 늘린다 - 그러면 내부 항목은 그
-        # 늘어난 높이 안에서 다시 세로 중앙정렬되어 실제 y좌표가 0이 아니게
-        # 되는데, qfluentwidgets의 선택 표시(흰 박스)는 SegmentedWidget 자신의
-        # 높이를 기준으로 그려서 늘 위쪽에 그려지는 것처럼 보인다(실측:
-        # 늘어난 상태에서 item.geometry()=y=17, 흰 박스는 y=0~30에 그려짐).
+        # wrap의 전체 높이까지 세로로 늘린다 - 그러면 내부 항목은 그 늘어난
+        # 높이 안에서 다시 세로 중앙정렬되어 실제 y좌표가 0이 아니게 되는데,
+        # qfluentwidgets의 선택 표시(흰 박스)는 SegmentedWidget 자신의 높이를
+        # 기준으로 그려서 늘 위쪽에 그려지는 것처럼 보인다(실측: 늘어난
+        # 상태에서 item.geometry()=y=17, 흰 박스는 y=0~30에 그려짐).
         # AlignVCenter를 주면 SegmentedWidget이 sizeHint 높이 그대로(늘어나지
         # 않고) 세로 중앙에 놓여 item.y()가 0이 되고 문제가 사라진다.
         view_seg_wrap_layout.addWidget(self.view_seg, 0, Qt.AlignmentFlag.AlignVCenter)
-        view_seg_wrap_layout.addStretch(1)
-        header_layout.addWidget(view_seg_wrap)
 
-        header_layout.addStretch(1)
+        # ---------- 오른쪽: 상태/새로고침/설정 ----------
+        right_wrap = QWidget(header)
+        right_wrap_layout = QHBoxLayout(right_wrap)
+        right_wrap_layout.setContentsMargins(0, 0, 0, 0)
+        right_wrap_layout.setSpacing(theme.SPACE_4)
 
-        self.status_label = uic.StatusPill("대기", tone="neutral", parent=header)
+        self.status_label = uic.StatusPill("대기", tone="neutral", parent=right_wrap)
         self.status_label.setMinimumWidth(_status_pill_min_width())
-        header_layout.addWidget(self.status_label)
+        right_wrap_layout.addWidget(self.status_label)
 
-        refresh_btn = PushButton("새로고침", header, FluentIcon.SYNC)
+        refresh_btn = PushButton("새로고침", right_wrap, FluentIcon.SYNC)
         refresh_btn.setFixedHeight(theme.CONTROL_HEIGHT_DEFAULT)
         refresh_btn.setToolTip("새로고침")
         refresh_btn.setAccessibleName("새로고침")
         refresh_btn.clicked.connect(self.refresh_all)
-        header_layout.addWidget(refresh_btn)
+        right_wrap_layout.addWidget(refresh_btn)
 
-        settings_btn = uic.IconActionButton(FluentIcon.SETTING, tooltip="설정", parent=header)
-        settings_btn.setAccessibleName("설정")
+        settings_btn = uic.IconActionButton(FluentIcon.SETTING, tooltip="설정", parent=right_wrap)
         settings_btn.clicked.connect(self._open_settings)
-        header_layout.addWidget(settings_btn)
+        right_wrap_layout.addWidget(settings_btn)
 
+        # 왼쪽/오른쪽 칸을 서로 같은 폭으로 고정(더 넓은 쪽 기준) - 부제가
+        # 나중에 숨겨져도(컴팩트 모드) 이 폭은 그대로라 가운데 정렬이 안
+        # 흔들린다.
+        both_w = max(left_wrap.sizeHint().width(), right_wrap.sizeHint().width())
+        left_wrap.setFixedWidth(both_w)
+        right_wrap.setFixedWidth(both_w)
+
+        header_grid.addWidget(left_wrap, 0, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        header_grid.addWidget(view_seg_wrap, 0, 1, Qt.AlignmentFlag.AlignCenter)
+        header_grid.addWidget(
+            right_wrap, 0, 2, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        header_grid.setColumnStretch(0, 1)
+        header_grid.setColumnStretch(1, 0)
+        header_grid.setColumnStretch(2, 1)
+
+        self._header = header
         self.root_layout.addWidget(header)
 
         header_divider = QFrame(self)
@@ -1439,15 +1709,18 @@ class WeatherDutyApp(QMainWindow):
         header_divider.setStyleSheet(f"background-color:{c['divider']};")
         self.root_layout.addWidget(header_divider)
 
+        self._apply_header_compact_mode(self.width())
+
     def _build_sidebar(self, parent):
-        """평평한 split-view 왼쪽 패널: 제목 + 즐겨찾기 편집 아이콘 버튼 헤더,
-        그 아래 즐겨찾기 목록(비어 있으면 EmptyState)."""
+        """평평한 split-view 왼쪽 패널: 제목 + 즐겨찾기 편집/접기 아이콘 버튼
+        헤더, 그 아래 즐겨찾기 목록(비어 있으면 EmptyState). 접힘 상태에서는
+        제목/편집 버튼/목록을 숨기고 접기 버튼만 좁은 레일에 남긴다 - 실제
+        폭/보임 상태 적용은 _apply_sidebar_collapsed_state()가 한다(스플리터가
+        준비된 뒤 _build_layout()이 그 메서드를 호출)."""
         c = theme.colors()
         sidebar = QWidget(parent)
         sidebar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         sidebar.setStyleSheet(f"background-color:{c['surface']};")
-        sidebar.setMinimumWidth(theme.SIDEBAR_MIN_WIDTH)
-        sidebar.setMaximumWidth(theme.SIDEBAR_MAX_WIDTH)
 
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(
@@ -1457,15 +1730,19 @@ class WeatherDutyApp(QMainWindow):
 
         header_row = QHBoxLayout()
         header_row.setSpacing(theme.SPACE_2)
-        sidebar_title = QLabel("즐겨찾기 지역", sidebar)
-        sidebar_title.setFont(theme.font_role("card_title"))
-        sidebar_title.setStyleSheet(f"color:{c['text_primary']}; background:transparent; border:none;")
-        header_row.addWidget(sidebar_title)
+        self._sidebar_title_label = QLabel("즐겨찾기 지역", sidebar)
+        self._sidebar_title_label.setFont(theme.font_role("card_title"))
+        self._sidebar_title_label.setStyleSheet(
+            f"color:{c['text_primary']}; background:transparent; border:none;"
+        )
+        header_row.addWidget(self._sidebar_title_label)
         header_row.addStretch(1)
-        edit_btn = uic.IconActionButton(FluentIcon.EDIT, tooltip="즐겨찾기 편집", parent=sidebar)
-        edit_btn.setAccessibleName("즐겨찾기 편집")
-        edit_btn.clicked.connect(self._open_region_manager)
-        header_row.addWidget(edit_btn)
+        self._sidebar_edit_btn = uic.IconActionButton(FluentIcon.EDIT, tooltip="즐겨찾기 편집", parent=sidebar)
+        self._sidebar_edit_btn.clicked.connect(self._open_region_manager)
+        header_row.addWidget(self._sidebar_edit_btn)
+        self._sidebar_collapse_btn = uic.IconActionButton(FluentIcon.LEFT_ARROW, tooltip="사이드바 접기", parent=sidebar)
+        self._sidebar_collapse_btn.clicked.connect(self._toggle_sidebar_collapsed)
+        header_row.addWidget(self._sidebar_collapse_btn)
         sidebar_layout.addLayout(header_row)
 
         self._favorites_stack = QStackedWidget(sidebar)
@@ -1488,7 +1765,43 @@ class WeatherDutyApp(QMainWindow):
 
         sidebar_layout.addWidget(self._favorites_stack, 1)
 
+        self._sidebar_widget = sidebar
         return sidebar
+
+    def _toggle_sidebar_collapsed(self):
+        self._sidebar_collapsed = not getattr(self, "_sidebar_collapsed", False)
+        self._apply_sidebar_collapsed_state()
+
+    def _apply_sidebar_collapsed_state(self):
+        """사이드바 접힘/펼침 상태를 실제 위젯에 반영한다. self._sidebar_collapsed는
+        WeatherDutyApp 인스턴스 자체에 남아 있는 값이라(_rebuild_ui()는 위젯만
+        새로 만들 뿐 self를 새로 만들지 않음), 테마 전환이나 화면 전환(view_mode)
+        뒤에도 그대로 유지된다(단, 앱을 껐다 켜는 것까지 기억하진 않는다)."""
+        collapsed = getattr(self, "_sidebar_collapsed", False)
+        sidebar = self._sidebar_widget
+        if collapsed:
+            sidebar.setMinimumWidth(theme.SIDEBAR_COLLAPSED_WIDTH)
+            sidebar.setMaximumWidth(theme.SIDEBAR_COLLAPSED_WIDTH)
+        else:
+            sidebar.setMinimumWidth(theme.SIDEBAR_MIN_WIDTH)
+            sidebar.setMaximumWidth(theme.SIDEBAR_MAX_WIDTH)
+
+        self._sidebar_title_label.setVisible(not collapsed)
+        self._sidebar_edit_btn.setVisible(not collapsed)
+        self._favorites_stack.setVisible(not collapsed)
+
+        self._sidebar_collapse_btn.setIcon(FluentIcon.RIGHT_ARROW if collapsed else FluentIcon.LEFT_ARROW)
+        tip = "사이드바 펼치기" if collapsed else "사이드바 접기"
+        self._sidebar_collapse_btn.setToolTip(tip)
+        self._sidebar_collapse_btn.setAccessibleName(tip)
+
+        splitter = getattr(self, "_body_splitter", None)
+        if splitter is not None:
+            total = sum(splitter.sizes()) or self.width()
+            if collapsed:
+                splitter.setSizes([theme.SIDEBAR_COLLAPSED_WIDTH, max(total - theme.SIDEBAR_COLLAPSED_WIDTH, 400)])
+            else:
+                splitter.setSizes([theme.SIDEBAR_DEFAULT_WIDTH, max(total - theme.SIDEBAR_DEFAULT_WIDTH, 400)])
 
     def _style_favorites_list(self):
         c = theme.colors()
@@ -1512,6 +1825,9 @@ class WeatherDutyApp(QMainWindow):
                 color: {c['text_primary']};
                 font-weight: 500;
             }}
+            QListWidget::item:focus {{
+                border: {theme.FOCUS_RING_WIDTH}px solid {c['focus']};
+            }}
         """)
 
     def _build_layout(self):
@@ -1528,9 +1844,14 @@ class WeatherDutyApp(QMainWindow):
         self.root_layout.addWidget(body_container, 1)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, body_container)
-        splitter.setHandleWidth(theme.SPACE_1)
+        splitter.setHandleWidth(theme.SPLITTER_HANDLE_WIDTH)
         splitter.setChildrenCollapsible(False)
-        splitter.setStyleSheet(f"QSplitter::handle {{ background-color:{c['divider']}; }}")
+        # 손잡이는 평소엔 구분선(divider)처럼 옅게 보이다가, hover 시에만
+        # accent 색으로 밝아져 "잡을 수 있는 위치"임을 알려준다.
+        splitter.setStyleSheet(
+            f"QSplitter::handle {{ background-color:{c['divider']}; }}"
+            f"QSplitter::handle:hover {{ background-color:{c['accent']}; }}"
+        )
         body_layout.addWidget(splitter)
 
         sidebar = self._build_sidebar(splitter)
@@ -1544,6 +1865,8 @@ class WeatherDutyApp(QMainWindow):
         splitter.setSizes(
             [theme.SIDEBAR_DEFAULT_WIDTH, max(self.width() - theme.SIDEBAR_DEFAULT_WIDTH, 400)]
         )
+        self._body_splitter = splitter
+        self._apply_sidebar_collapsed_state()
 
         self.detail_page = QWidget(self.stack)
         self._build_detail_widgets(self.detail_page)
@@ -1628,48 +1951,23 @@ class WeatherDutyApp(QMainWindow):
         metrics_row.addStretch(1)
         hero_layout.addLayout(metrics_row)
 
-        # 오류 배너(danger, 오류 없으면 숨김) - 톤이 항상 danger로 고정이라 구성 시
-        # 한 번만 스타일을 입히고, 보일지 말지만 _render_region()에서 토글한다.
-        self._error_banner_frame = QFrame(hero)
-        self._error_banner_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self._error_banner_frame.setStyleSheet(
-            f"QFrame {{ background-color:{c['danger_soft']}; border:none; border-radius:{theme.RADIUS_PANEL}px; }}"
+        # 오류 배너(danger, 오류 없으면 숨김) - InlineBanner(제목 포함)로 통합.
+        # self.error_label은 기존 코드 호환을 위한 alias(본문 QLabel 그대로).
+        self._error_banner_frame = uic.InlineBanner(
+            "", title="데이터 조회 오류", level="danger", parent=hero,
         )
-        error_banner_layout = QVBoxLayout(self._error_banner_frame)
-        error_banner_layout.setContentsMargins(
-            theme.SPACE_4, theme.SPACE_3, theme.SPACE_4, theme.SPACE_3
-        )
-        error_banner_layout.setSpacing(theme.SPACE_1)
-        error_title = QLabel("⚠ 데이터 조회 오류", self._error_banner_frame)
-        error_title.setFont(theme.font_role("label"))
-        error_title.setStyleSheet(f"color:{c['danger']}; background:transparent; border:none;")
-        error_banner_layout.addWidget(error_title)
-        self.error_label = QLabel("", self._error_banner_frame)
-        self.error_label.setFont(theme.font_role("caption"))
-        self.error_label.setWordWrap(True)
-        self.error_label.setStyleSheet(f"color:{c['text_secondary']}; background:transparent; border:none;")
-        error_banner_layout.addWidget(self.error_label)
         hero_layout.addWidget(self._error_banner_frame)
         self._error_banner_frame.setVisible(False)
+        self.error_label = self._error_banner_frame.text_label
 
-        # 특보 배너 - 특보 없음(평상시)은 눈에 띄지 않는 중립 톤 + 작은 상태 점만,
+        # 특보 배너 - 특보 없음(평상시)은 subtle=True로 눈에 띄지 않게,
         # 특보 있음일 때만 danger 톤으로 강하게 표시한다(_style_warning_banner).
-        self._warning_banner_frame = QFrame(hero)
-        self._warning_banner_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        warning_layout = QHBoxLayout(self._warning_banner_frame)
-        warning_layout.setContentsMargins(
-            theme.SPACE_4, theme.SPACE_3, theme.SPACE_4, theme.SPACE_3
+        # self.warning_banner도 기존 코드 호환을 위한 alias.
+        self._warning_banner_frame = uic.InlineBanner(
+            "현재 발효 중인 특보가 없습니다.", level="success", subtle=True, parent=hero,
         )
-        warning_layout.setSpacing(theme.SPACE_3)
-        self._warning_dot = QLabel(self._warning_banner_frame)
-        self._warning_dot.setFixedSize(8, 8)
-        warning_layout.addWidget(self._warning_dot, 0, Qt.AlignmentFlag.AlignTop)
-        self.warning_banner = QLabel("현재 발효 중인 특보가 없습니다.", self._warning_banner_frame)
-        self.warning_banner.setFont(theme.font_role("body"))
-        self.warning_banner.setWordWrap(True)
-        warning_layout.addWidget(self.warning_banner, 1)
         hero_layout.addWidget(self._warning_banner_frame)
-        self._style_warning_banner(has_warning=False)
+        self.warning_banner = self._warning_banner_frame.text_label
 
         # ---------- 일별 예보 ----------
         forecast_header = uic.SectionHeader(
@@ -1696,19 +1994,12 @@ class WeatherDutyApp(QMainWindow):
         layout.addWidget(self.forecast_scroll, 1)
 
     def _style_warning_banner(self, has_warning):
-        """특보 배너 톤 갱신. 특보가 있을 때만 danger로 강하게, 없으면
-        success_soft 배경 + 작은 점 + 중립 텍스트로 조용하게(글자 자체는
-        success로 칠하지 않고 text_secondary를 써서 초록을 과하게 쓰지 않는다)."""
-        c = theme.colors()
+        """특보 배너 톤 갱신. 특보가 있을 때만 danger로 강하게(subtle=False),
+        없으면 success·subtle=True로 조용하게(초록을 과하게 쓰지 않는다)."""
         if has_warning:
-            bg, dot, text = c["danger_soft"], c["danger"], c["danger"]
+            self._warning_banner_frame.set_level("danger", subtle=False)
         else:
-            bg, dot, text = c["success_soft"], c["success"], c["text_secondary"]
-        self._warning_banner_frame.setStyleSheet(
-            f"QFrame {{ background-color:{bg}; border:none; border-radius:{theme.RADIUS_PANEL}px; }}"
-        )
-        self._warning_dot.setStyleSheet(f"background-color:{dot}; border-radius:4px;")
-        self.warning_banner.setStyleSheet(f"color:{text}; background:transparent; border:none;")
+            self._warning_banner_frame.set_level("success", subtle=True)
 
     def _build_summary_widgets(self, parent):
         """즐겨찾기 종합보기: 제목/지사 관리 버튼 -> 가로 스크롤 날짜 선택 ->
@@ -1772,9 +2063,11 @@ class WeatherDutyApp(QMainWindow):
         self._summary_no_branch_banner.setVisible(False)
         layout.addWidget(self._summary_no_branch_banner)
 
+        # 기본 문구/톤은 "일부 실패"(warning) 기준으로 만들어 두고, 실제
+        # 렌더링에서 전체 실패로 판단되면 danger로 바꿔 문구도 함께 갱신한다.
         self._summary_error_banner = uic.InlineBanner(
             "일부 지역의 데이터를 불러오지 못했습니다. 지역별 상세보기에서 자세한 오류를 확인할 수 있습니다.",
-            level="danger", parent=parent,
+            level="warning", parent=parent,
         )
         self._summary_error_banner.setVisible(False)
         layout.addWidget(self._summary_error_banner)
@@ -1809,6 +2102,11 @@ class WeatherDutyApp(QMainWindow):
         self.summary_table.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.summary_table.cellDoubleClicked.connect(self._on_summary_cell_double_clicked)
         self.summary_table.cellClicked.connect(self._on_summary_cell_clicked)
+        # 지사명 칸에 키보드로 초점을 옮긴 뒤 Enter/Return을 눌러도 마우스
+        # 클릭과 같은 동작(_open_branch_range)이 나가도록 - activated는
+        # Qt에서 "Enter/Return 또는 더블클릭으로 항목을 활성화"할 때 공통으로
+        # 나가는 시그널이라 별도 keyPressEvent 오버라이드 없이 재사용한다.
+        self.summary_table.cellActivated.connect(self._on_summary_cell_clicked)
         self._style_summary_table_header()
 
         # resizeColumnsToContents() 한 번으로 퉁치지 않고, 열 성격에 맞게 각각
@@ -2018,10 +2316,12 @@ class WeatherDutyApp(QMainWindow):
             is_loading = name not in self.reports
             # 텍스트는 지역명 그대로 두고("조회 중… " 접두어 없음), 진행 상태는
             # 아이콘 점 하나로만 곁들인다 - UserRole도 그대로 지역명을 담는다.
+            # 단, 점 색깔만으로 상태를 전달하지 않도록 tooltip에는 "조회 중"
+            # 문구를 함께 넣는다(색맹 등으로 색을 구분 못 해도 상태를 알 수 있게).
             item = QListWidgetItem(name)
             item.setFont(self.font_body)
             item.setData(Qt.ItemDataRole.UserRole, name)
-            item.setToolTip(name)
+            item.setToolTip(f"{name} (조회 중)" if is_loading else name)
             item.setSizeHint(QSize(0, 40))
             item.setIcon(_dot_icon(c["info"]) if is_loading else QIcon())
             self.favorites_list.addItem(item)
@@ -2142,21 +2442,30 @@ class WeatherDutyApp(QMainWindow):
             pop = day.get("pop")
             fl_min, fl_max = day.get("feels_like_min"), day.get("feels_like_max")
             tmin, tmax = day.get("tmin"), day.get("tmax")
-            temp_text = f"{tmin}° / {tmax}°" if (tmin or tmax) else "-"
+            temp_text = _format_min_max(tmin, tmax)
 
+            has_detail = bool(day.get("hourly"))
             row.set_data(
                 date_text=_pretty_date_with_weekday(day.get("date") or "", today_str),
                 condition_text=day.get("condition") or "-",
                 pop_text=(f"강수 {pop}%" if pop is not None else "강수 -"),
                 pop_tone=_pop_tone(pop),
                 pcp_text=_pcp_display_text(day),
-                feels_text=(f"체감 {fl_min}° / {fl_max}°" if fl_min is not None else ""),
+                pcp_tooltip=_pcp_display_tooltip(day),
+                feels_text=(f"체감 {_format_min_max(fl_min, fl_max)}" if fl_min is not None else ""),
                 source_text=day.get("source") or "-",
                 source_tone=("info" if day.get("source") == "실측" else "neutral"),
                 temp_text=temp_text,
                 tooltip=_forecast_row_tooltip(day),
+                has_detail=has_detail,
+                disabled_reason=("" if has_detail else _hourly_detail_reason(day)),
             )
+            # 더블클릭(기존 동작)과 상세보기 버튼/키보드 활성화(activated, 신규)는
+            # ForecastRow 내부에서 서로 다른 사용자 동작에만 배타적으로 연결되어
+            # 있어(더블클릭은 항상, activated는 has_detail일 때만) 같은 다이얼로그를
+            # 열어도 한 번의 조작에 중복 호출되지 않는다.
             row.doubleClicked.connect(lambda n=region_name, d=day: self._open_hourly_detail(n, d))
+            row.activated.connect(lambda n=region_name, d=day: self._open_hourly_detail(n, d))
             self.forecast_layout.addWidget(row)
 
             separator = QFrame(parent_widget)
@@ -2289,8 +2598,24 @@ class WeatherDutyApp(QMainWindow):
 
         # 지사 미설정/일부 오류는 표를 막지 않는 비차단 안내(InlineBanner)로만 알린다.
         self._summary_no_branch_banner.setVisible(not branches)
-        has_any_error = any((self.reports.get(r) or {}).get("errors") for r in favorites)
-        self._summary_error_banner.setVisible(bool(has_any_error))
+        error_regions = [r for r in favorites if (self.reports.get(r) or {}).get("errors")]
+        if error_regions:
+            # 일부만 실패하면 warning, 즐겨찾기 전체가 실패하면 danger로
+            # 구분한다(강수확률과 달리 이건 실제 조회 실패이므로 danger 자체는
+            # 유지하되 "일부"와 "전체"를 다른 톤으로 알린다).
+            if len(error_regions) == len(favorites):
+                self._summary_error_banner.set_message(
+                    "즐겨찾기 지역의 데이터를 모두 불러오지 못했습니다. 서비스키와 네트워크 연결을 확인해 주세요.",
+                    level="danger",
+                )
+            else:
+                self._summary_error_banner.set_message(
+                    "일부 지역의 데이터를 불러오지 못했습니다. 지역별 상세보기에서 자세한 오류를 확인할 수 있습니다.",
+                    level="warning",
+                )
+            self._summary_error_banner.setVisible(True)
+        else:
+            self._summary_error_banner.setVisible(False)
 
         total_rows = sum(len(members) for _b, members in groups)
         table.setRowCount(total_rows)
@@ -2324,14 +2649,22 @@ class WeatherDutyApp(QMainWindow):
 
                 self._summary_row_days[row_idx] = (region_name, day)
 
-                name_text = ("조회 중… " + region_name) if is_loading else region_name
+                # 지역명 앞에 "조회 중… " 문구를 붙이는 대신, 로딩 중임을
+                # 나타내는 작은 점 글리프(색이 아니라 기호 자체로 구분)와
+                # tooltip으로만 전달해 지역명 자체는 항상 그대로 보이게 한다.
+                if is_loading:
+                    name_text = f"● {region_name}"
+                    name_tooltip = f"{region_name} 데이터를 조회하고 있습니다."
+                else:
+                    name_text = region_name
+                    name_tooltip = region_name
                 self._set_summary_item(
                     table, row_idx, 1, name_text, c["text_primary"], row_bg, theme.font_role("body"),
-                    align=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, tooltip=region_name,
+                    align=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, tooltip=name_tooltip,
                 )
 
                 tmin, tmax = (day.get("tmin"), day.get("tmax")) if day else (None, None)
-                temp_text = f"{tmin}°/{tmax}°" if (tmin is not None or tmax is not None) else "—"
+                temp_text = _format_min_max(tmin, tmax)
                 self._set_summary_item(
                     table, row_idx, 2, temp_text, c["text_primary"], row_bg, theme.font_role("caption"),
                     align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
@@ -2340,9 +2673,11 @@ class WeatherDutyApp(QMainWindow):
                 fl_min, fl_max = (day.get("feels_like_min"), day.get("feels_like_max")) if day else (None, None)
                 feels_tooltip = ""
                 if fl_min is not None:
-                    feels_text = f"{fl_min}°/{fl_max}°"
+                    feels_text = _format_min_max(fl_min, fl_max)
                 elif day and day.get("source") == "중기예보":
-                    feels_text = "중기예보"
+                    # 출처 배지가 이미 "중기예보"를 보여주므로 값 칸에서는
+                    # 반복하지 않고 "—" + 이유를 담은 tooltip만 남긴다.
+                    feels_text = "—"
                     feels_tooltip = "중기예보는 체감온도를 제공하지 않습니다."
                 else:
                     feels_text = "—"
@@ -2365,7 +2700,10 @@ class WeatherDutyApp(QMainWindow):
                     peak = _pcp_peak_hour_text(day)
                     pcp_text = f"{day.get('pcp')}{peak}" if peak else day.get("pcp")
                 elif day.get("source") == "중기예보":
-                    pcp_text = "중기예보"
+                    # 출처 배지(특보 열 옆이 아니라 지사 클릭 시 비교창 등에서
+                    # 이미 "중기예보"를 보여주므로) 값 칸에서는 반복하지 않고
+                    # "—" + tooltip으로만 이유를 설명한다.
+                    pcp_text = "—"
                     pcp_tooltip = "중기예보는 강수량을 제공하지 않습니다."
                 else:
                     pcp_text = "강수없음"

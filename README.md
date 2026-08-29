@@ -2,9 +2,17 @@
 
 폭염·풍수해·제설 근무를 위한 지역별 날씨 모니터. 서버 없이 로컬에서 실행하는
 데스크톱 프로그램(파이썬 + PySide6/Qt + [PySide6-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets))으로,
-기상청(공공데이터포털) API를 직접 호출한다. 화면은 애플 시스템 설정의 "그래파이트"
-(무채색) 손잡이색을 참고한 블랙 앤 화이트 톤에, Pretendard 번들 폰트로 라이트·다크
-모드를 지원한다.
+기상청(공공데이터포털) API를 직접 호출한다. 화면은 절제된 톤의 자체 디자인 토큰
+체계("Calm Operations Dashboard", `weather_duty/theme.py`)를 따르고, Pretendard
+번들 폰트로 라이트·다크 모드를 지원한다.
+
+## 화면
+
+| 지역별 상세 | 즐겨찾기 종합 |
+| --- | --- |
+| ![지역별 상세 화면](docs/screenshots/detail_view.png) | ![즐겨찾기 종합 화면](docs/screenshots/summary_view.png) |
+
+(위 화면은 실제 기상청 API 응답이 아니라 목(mock) 데이터로 만든 예시입니다.)
 
 ## 기능
 
@@ -128,6 +136,11 @@ Windows PC에 Python 없이 그대로 복사해서 쓸 수 있다.
 pip install -r requirements.txt
 python main.py
 ```
+
+`requirements.txt`는 느슨한 최소 버전(`>=`)만 정한다. 특정 문제를 재현하거나
+CI/배포 빌드처럼 "이 조합에서 동작을 확인했다"는 정확한 기준이 필요하면
+`requirements-lock.txt`(실제 설치 상태를 `pip freeze`로 그대로 옮긴 전체
+고정 버전 목록)를 대신 쓴다: `pip install -r requirements-lock.txt`.
 
 ## 설정 파일 위치
 

@@ -1,0 +1,19 @@
+# 실제로 이 저장소에서 개발/검증에 쓴 설치 버전을 그대로 고정한 파일이다.
+# requirements.txt(>=, 느슨한 최소 버전)와 달리 여기 있는 값은 전부
+# `pip freeze`로 실제 설치 상태를 직접 확인해서 옮긴 것이며 추측값이 아니다.
+#
+# 재현 가능한 설치가 필요할 때(버그 재현, CI, 배포용 빌드 등):
+#   pip install -r requirements-lock.txt
+#
+# 평소 개발에는 그대로 requirements.txt(느슨한 최소 버전)를 써도 된다 -
+# 이 파일은 "정확히 이 조합에서 동작을 확인했다"는 재현 기준점이다.
+
+requests==2.33.1
+PySide6==6.11.2
+PySide6-Fluent-Widgets==1.11.3
+PySide6_Addons==6.11.2
+PySide6_Essentials==6.11.2
+PySideSix-Frameless-Window==0.8.2
+shiboken6==6.11.2
+PyPAC==0.19.0
+truststore==0.10.4; python_version >= "3.10"
