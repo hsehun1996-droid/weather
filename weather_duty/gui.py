@@ -354,65 +354,71 @@ class HourlyDetailDialog(_ThemedDialog):
         outer.addWidget(summary_frame)
 
         # ---------- 시간대별 표(또는 시간별 데이터가 없는 이유 안내) ----------
+        # 시각을 열(가로)로, 항목(날씨/기온/체감온도/강수량/강수확률)을 행으로
+        # 늘어놓는다 - 하루 시간대를 옆으로 훑어보기 편한 원래 레이아웃.
         if not hourly:
             reason = _hourly_detail_reason(day)
             empty = uic.EmptyState("시간별 데이터가 없습니다", reason, self)
             empty.setMinimumHeight(160)
             outer.addWidget(empty, 1)
         else:
+            row_labels = ["날씨", "기온", "체감온도", "강수량", "강수확률"]
             table = TableWidget(self)
-            table.setColumnCount(6)
-            table.setHorizontalHeaderLabels(["시각", "날씨", "기온", "체감온도", "강수량", "강수확률"])
-            table.verticalHeader().hide()
+            table.setColumnCount(len(hourly))
+            table.setHorizontalHeaderLabels([_format_fcst_time(h.get("time")) for h in hourly])
+            table.setRowCount(len(row_labels))
+            table.setVerticalHeaderLabels(row_labels)
             table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
             table.setBorderRadius(theme.RADIUS_CARD)
             table.verticalHeader().setDefaultSectionSize(theme.TABLE_ROW_HEIGHT)
+            table.verticalHeader().setFixedWidth(90)
             table.horizontalHeader().setFixedHeight(theme.TABLE_HEADER_HEIGHT)
             table.horizontalHeader().setStretchLastSection(False)
             table.setWordWrap(False)
             table.setTextElideMode(Qt.TextElideMode.ElideRight)
             table.horizontalHeader().setFont(theme.font_role("label"))
+            table.verticalHeader().setFont(theme.font_role("label"))
             header = table.horizontalHeader()
-            for col in range(6):
-                header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
-            table.setRowCount(len(hourly))
+            # 112px: "구름많음"/"강수없음" 등은 폰트 기준 실측 폭이 55px 정도라
+            # 더 좁아도 될 것 같지만, qfluentwidgets TableWidget의 아이템
+            # delegate가 그보다 더 넓게 여백을 소비해 88px에서도 "..."로
+            # 잘렸다(실측으로 확인) - 스크린샷으로 잘리지 않는 폭을 확인해 정함.
+            for col in range(len(hourly)):
+                header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+                table.setColumnWidth(col, 112)
 
             def _restyle_table():
                 tc = theme.colors()
-                table.horizontalHeader().setStyleSheet(
+                header_qss = (
                     f"QHeaderView::section {{ background-color:{tc['surface_alt']}; color:{tc['text_primary']};"
-                    f" border:none; padding:0 {theme.SPACE_3}px; }}"
+                    f" border:none; padding:0 {theme.SPACE_2}px; }}"
                 )
-                for row, hour in enumerate(hourly):
+                table.horizontalHeader().setStyleSheet(header_qss)
+                table.verticalHeader().setStyleSheet(header_qss)
+                for col, hour in enumerate(hourly):
                     self._set_hour_cell(
-                        table, row, 0, _format_fcst_time(hour.get("time")), tc["text_primary"],
-                        theme.font_role("body"), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                    )
-                    self._set_hour_cell(
-                        table, row, 1, hour.get("condition") or "-", tc["text_secondary"],
-                        theme.font_role("caption"), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                        table, 0, col, hour.get("condition") or "-", tc["text_secondary"],
+                        theme.font_role("caption"), Qt.AlignmentFlag.AlignCenter,
                     )
                     temp = hour.get("temp")
                     self._set_hour_cell(
-                        table, row, 2, (f"{temp}°" if temp is not None else "-"), tc["text_primary"],
-                        theme.font_role("body"), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                        table, 1, col, (f"{temp}°" if temp is not None else "-"), tc["text_primary"],
+                        theme.font_role("body"), Qt.AlignmentFlag.AlignCenter,
                     )
                     feels_like = hour.get("feels_like")
                     self._set_hour_cell(
-                        table, row, 3, (f"{feels_like:.1f}°" if feels_like is not None else "-"),
-                        tc["text_primary"], theme.font_role("body"),
-                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                        table, 2, col, (f"{feels_like:.1f}°" if feels_like is not None else "-"),
+                        tc["text_primary"], theme.font_role("body"), Qt.AlignmentFlag.AlignCenter,
                     )
                     self._set_hour_cell(
-                        table, row, 4, hour.get("pcp") or "-", tc["text_secondary"],
-                        theme.font_role("caption"), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                        table, 3, col, hour.get("pcp") or "-", tc["text_secondary"],
+                        theme.font_role("caption"), Qt.AlignmentFlag.AlignCenter,
                     )
                     pop_val = hour.get("pop")
                     self._set_hour_cell(
-                        table, row, 5, (f"{pop_val}%" if pop_val is not None else "-"),
-                        theme.pop_color(pop_val, tc), theme.font_role("caption"),
-                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                        table, 4, col, (f"{pop_val}%" if pop_val is not None else "-"),
+                        theme.pop_color(pop_val, tc), theme.font_role("caption"), Qt.AlignmentFlag.AlignCenter,
                     )
 
             _restyle_table()
@@ -423,7 +429,7 @@ class HourlyDetailDialog(_ThemedDialog):
         close_btn.clicked.connect(self.close)
         outer.addWidget(uic.DialogFooter([close_btn], parent=self))
 
-        self.resize(680, 520 if hourly else 320)
+        self.resize(820, 580 if hourly else 320)
         _bring_to_front(self)
 
     @staticmethod
@@ -775,34 +781,40 @@ class BranchRangeDialog(_ThemedDialog):
             _bring_to_front(self)
             return
 
-        picker_row = QHBoxLayout()
-        picker_row.setSpacing(theme.SPACE_3)
-        self._date_hdr = QLabel("날짜", self)
-        self._date_hdr.setFont(self.font_body)
-        picker_row.addWidget(self._date_hdr)
+        # 시작/종료를 각각 "날짜 + 시각"으로 독립적으로 고른다 - 하루 안에서만
+        # 구간을 고르던 이전 방식과 달리, 여러 날에 걸친 구간(예: 08/28 14시
+        # ~ 08/30 09시)도 지정할 수 있다.
+        date_labels = [f"{d[4:6]}/{d[6:8]}" for d in self.dates]
 
-        self.date_seg = SegmentedWidget(self)
-        for d in self.dates:
-            self.date_seg.addItem(d, f"{d[4:6]}/{d[6:8]}", onClick=lambda _c=False, dd=d: self._on_date_changed(dd))
-        picker_row.addWidget(self.date_seg, 1)
-        outer.addLayout(picker_row)
-
-        time_row = QHBoxLayout()
-        time_row.setSpacing(theme.SPACE_3)
+        start_row = QHBoxLayout()
+        start_row.setSpacing(theme.SPACE_3)
         self._start_hdr = QLabel("시작", self)
         self._start_hdr.setFont(self.font_body)
-        time_row.addWidget(self._start_hdr)
+        start_row.addWidget(self._start_hdr)
+        self.start_date_combo = ComboBox(self)
+        self.start_date_combo.addItems(date_labels)
+        self.start_date_combo.currentIndexChanged.connect(self._on_start_date_changed)
+        start_row.addWidget(self.start_date_combo)
         self.start_combo = ComboBox(self)
         self.start_combo.currentTextChanged.connect(lambda _v: self._render())
-        time_row.addWidget(self.start_combo)
+        start_row.addWidget(self.start_combo)
+        start_row.addStretch(1)
+        outer.addLayout(start_row)
+
+        end_row = QHBoxLayout()
+        end_row.setSpacing(theme.SPACE_3)
         self._end_hdr = QLabel("종료", self)
         self._end_hdr.setFont(self.font_body)
-        time_row.addWidget(self._end_hdr)
+        end_row.addWidget(self._end_hdr)
+        self.end_date_combo = ComboBox(self)
+        self.end_date_combo.addItems(date_labels)
+        self.end_date_combo.currentIndexChanged.connect(self._on_end_date_changed)
+        end_row.addWidget(self.end_date_combo)
         self.end_combo = ComboBox(self)
         self.end_combo.currentTextChanged.connect(lambda _v: self._render())
-        time_row.addWidget(self.end_combo)
-        time_row.addStretch(1)
-        outer.addLayout(time_row)
+        end_row.addWidget(self.end_combo)
+        end_row.addStretch(1)
+        outer.addLayout(end_row)
 
         self.result_scroll = ScrollArea(self)
         self.result_scroll.setWidgetResizable(True)
@@ -822,7 +834,7 @@ class BranchRangeDialog(_ThemedDialog):
 
         def _restyle_pickers():
             pc = theme.colors()
-            for hdr in (self._date_hdr, self._start_hdr, self._end_hdr):
+            for hdr in (self._start_hdr, self._end_hdr):
                 hdr.setStyleSheet(f"color:{pc['text_secondary']}; background:transparent; border:none;")
 
         _restyle_pickers()
@@ -830,8 +842,11 @@ class BranchRangeDialog(_ThemedDialog):
         self._result_theme_refresh = []
         self._on_theme_refresh(self._refresh_result_rows)
 
-        self.date_seg.setCurrentItem(self.dates[0])
-        self._on_date_changed(self.dates[0])
+        self.start_date_combo.setCurrentIndex(0)
+        self.end_date_combo.setCurrentIndex(len(self.dates) - 1)
+        self._populate_start_hours(self.dates[0])
+        self._populate_end_hours(self.dates[-1])
+        self._render()
         _bring_to_front(self)
 
     def _short_term_dates(self):
@@ -867,27 +882,48 @@ class BranchRangeDialog(_ThemedDialog):
                     hours.add(int(t[:2]))
         return sorted(hours)
 
-    def _on_date_changed(self, date_str):
-        self._current_date = date_str
+    def _populate_start_hours(self, date_str):
         hours = self._hour_options(date_str)
-        start_values = [f"{h:02d}시" for h in hours]
-        end_values = [f"{h:02d}시" for h in hours[1:]] + ["24시"]
+        values = [f"{h:02d}시" for h in hours]
         self.start_combo.blockSignals(True)
-        self.end_combo.blockSignals(True)
         self.start_combo.clear()
-        self.start_combo.addItems(start_values or ["-"])
-        self.end_combo.clear()
-        self.end_combo.addItems(end_values or ["-"])
-        if end_values:
-            self.end_combo.setCurrentIndex(len(end_values) - 1)
+        self.start_combo.addItems(values or ["-"])
         self.start_combo.blockSignals(False)
+
+    def _populate_end_hours(self, date_str):
+        # 종료는 "그 시각까지"라 마지막 선택지로 자정을 뜻하는 24시를 더한다
+        # (예: 09시~24시 = 그날 09시부터 자정까지).
+        hours = self._hour_options(date_str)
+        values = [f"{h:02d}시" for h in hours[1:]] + ["24시"]
+        self.end_combo.blockSignals(True)
+        self.end_combo.clear()
+        self.end_combo.addItems(values or ["-"])
+        if values:
+            self.end_combo.setCurrentIndex(len(values) - 1)
         self.end_combo.blockSignals(False)
+
+    def _on_start_date_changed(self, index):
+        if index < 0 or index >= len(self.dates):
+            return
+        self._populate_start_hours(self.dates[index])
+        self._render()
+
+    def _on_end_date_changed(self, index):
+        if index < 0 or index >= len(self.dates):
+            return
+        self._populate_end_hours(self.dates[index])
         self._render()
 
     def _selected_hour(self, label):
         if not label or label == "-":
             return None
         return int(label[:2])
+
+    def _selected_date(self, combo):
+        index = combo.currentIndex()
+        if 0 <= index < len(self.dates):
+            return self.dates[index]
+        return None
 
     def _refresh_result_rows(self):
         """_render()가 매번 새로 만드는 result_layout 내용물의 테마 재적용
@@ -900,34 +936,53 @@ class BranchRangeDialog(_ThemedDialog):
         for callback in getattr(self, "_result_theme_refresh", []):
             callback()
 
+    def _date_window(self, date_str, start_date, start_hour, end_date, end_hour):
+        """구간(시작 날짜·시각 ~ 종료 날짜·시각) 중 date_str 하루에 해당하는
+        시(hour) 구간 [from, to)를 반환한다. 시작/종료가 같은 날이면 그 안에서만,
+        아니면 시작일은 그 시각부터 24시까지, 종료일은 0시부터 그 시각까지,
+        중간에 낀 날은 하루 전체(0~24시)를 더한다."""
+        day_from = start_hour if date_str == start_date else 0
+        day_to = end_hour if date_str == end_date else 24
+        return day_from, day_to
+
     def _render(self):
         _clear_layout(self.result_layout)
         self._result_theme_refresh = []
 
-        date_str = getattr(self, "_current_date", None)
+        start_date = self._selected_date(self.start_date_combo)
+        end_date = self._selected_date(self.end_date_combo)
         start_hour = self._selected_hour(self.start_combo.currentText())
         end_hour = self._selected_hour(self.end_combo.currentText())
-        if date_str is None or start_hour is None or end_hour is None:
+        if start_date is None or end_date is None or start_hour is None or end_hour is None:
             return
-        if start_hour >= end_hour:
-            warn = uic.InlineBanner("시작 시각은 종료 시각보다 앞서야 합니다.", level="warning", parent=self)
+        if (start_date, start_hour) >= (end_date, end_hour):
+            warn = uic.InlineBanner("시작 날짜·시각은 종료 날짜·시각보다 앞서야 합니다.", level="warning", parent=self)
             self.result_layout.addWidget(warn)
             return
+
+        range_dates = [d for d in self.dates if start_date <= d <= end_date]
 
         rows = []
         best_name, best_amount = None, -1.0
         for name in self.members:
             report = self.reports.get(name)
-            day = None
+            member_days = {}
             if report:
-                day = next((d for d in report.get("forecast", []) if d.get("date") == date_str), None)
-            if day is None:
+                for date_str in range_dates:
+                    day = next((d for d in report.get("forecast", []) if d.get("date") == date_str), None)
+                    if day is not None:
+                        member_days[date_str] = day
+
+            if not member_days:
                 pcp_text, amount = "-", -1.0
             else:
-                slot_pcp = [
-                    h.get("pcp") for h in (day.get("hourly") or [])
-                    if h.get("time") and start_hour <= int(h["time"][:2]) < end_hour
-                ]
+                slot_pcp = []
+                for date_str, day in member_days.items():
+                    day_from, day_to = self._date_window(date_str, start_date, start_hour, end_date, end_hour)
+                    slot_pcp.extend(
+                        h.get("pcp") for h in (day.get("hourly") or [])
+                        if h.get("time") and day_from <= int(h["time"][:2]) < day_to
+                    )
                 pcp_text = kma_client.sum_pcp_range(slot_pcp) if slot_pcp else "강수없음"
                 amount = _pcp_numeric(pcp_text)
             rows.append((name, pcp_text, amount))
@@ -935,9 +990,12 @@ class BranchRangeDialog(_ThemedDialog):
                 best_amount = amount
                 best_name = name
 
-        header = QLabel(
-            f"{date_str[4:6]}/{date_str[6:8]}  {start_hour:02d}시~{end_hour:02d}시 누적강수량", self
+        range_text = (
+            f"{start_date[4:6]}/{start_date[6:8]} {start_hour:02d}시 ~ {end_date[4:6]}/{end_date[6:8]} {end_hour:02d}시"
+            if start_date != end_date
+            else f"{start_date[4:6]}/{start_date[6:8]}  {start_hour:02d}시~{end_hour:02d}시"
         )
+        header = QLabel(f"{range_text} 누적강수량", self)
         header.setFont(theme.font_role("label"))
 
         def _restyle_header(header=header):
@@ -2110,27 +2168,26 @@ class WeatherDutyApp(QMainWindow):
         self._style_summary_table_header()
 
         # resizeColumnsToContents() 한 번으로 퉁치지 않고, 열 성격에 맞게 각각
-        # 정책을 명시한다 - 지사/강수량은 span·긴 문구 때문에 내용 기준 자동
-        # 계산이 부정확해질 수 있어 Interactive+초기폭으로, 지역명만 남는 폭을
+        # 정책을 명시한다 - 지사는 span·긴 문구 때문에 내용 기준 자동 계산이
+        # 부정확해질 수 있어 Interactive+초기폭으로, 지역명만 남는 폭을
         # 가져가도록 Stretch, 나머지 숫자열은 ResizeToContents로 짧게 맞춘다.
         header = self.summary_table.horizontalHeader()
         # Stretch 열(지역)은 다른 열들의 폭 합이 뷰포트를 넘으면 0까지 눌릴 수 있어
         # (960px 좁은 화면에서 지역명이 통째로 사라지는 문제로 실측됨),
         # 모든 열에 최소 폭을 강제해 그 이하로는 좁아지지 않고 가로 스크롤로 넘어가게 한다.
         header.setMinimumSectionSize(64)
-        # 폭을 먼저 잡아두고 나서 Stretch를 걸어야 두 Stretch 열(지역/강수량)이
-        # 남는 공간을 이 비율로 나눠 가진다 - 순서가 바뀌면 지역 열 혼자 남는
-        # 공간을 전부 가져가 강수량 열이 넓은 화면에서도 계속 좁게 남아
-        # "★ 65mm(15시 최대)" 같은 문구가 잘리는 문제가 있었다.
+        # 강수량은 이전엔 지역과 함께 Stretch 두 열이 남는 공간을 나눠 가져서,
+        # "★ 26mm(02시 최대)"처럼 긴 문구가 실측 화면에서 계속 잘렸다(지역명도
+        # 마찬가지). ResizeToContents로 바꿔 실제 내용 폭만큼 항상 확보하고,
+        # 지역 열 하나만 Stretch로 남는 공간을 전부 가져가게 한다.
         self.summary_table.setColumnWidth(0, 100)
-        self.summary_table.setColumnWidth(1, 220)
-        self.summary_table.setColumnWidth(5, 160)
+        self.summary_table.setColumnWidth(1, 260)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
         self._summary_content_stack.addWidget(self.summary_table)
 
