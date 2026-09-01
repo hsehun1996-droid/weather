@@ -13,7 +13,7 @@ import threading
 from PySide6.QtCore import Qt, QObject, QPointF, QRectF, QSize, QTimer, Signal
 from PySide6.QtGui import QFont, QFontMetrics, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QMainWindow, QFrame, QGridLayout, QHeaderView, QLabel, QSizePolicy,
+    QApplication, QWidget, QMainWindow, QFrame, QGridLayout, QHeaderView, QLabel, QScroller, QSizePolicy,
     QVBoxLayout, QHBoxLayout, QDialog, QSplitter, QStackedWidget,
     QTableWidgetItem, QAbstractItemView, QListWidgetItem,
 )
@@ -387,6 +387,11 @@ class HourlyDetailDialog(_ThemedDialog):
             for col in range(len(hourly)):
                 header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
                 table.setColumnWidth(col, 112)
+
+            # 표가 가로로 넘치면 스크롤바를 정확히 잡아야만 움직일 수 있었다 -
+            # 이 표는 선택/편집이 없는 순수 표시용(NoSelection)이라 클릭-드래그를
+            # 항목 선택 대신 그대로 가로 스크롤 제스처로 써도 안전하다.
+            QScroller.grabGesture(table.viewport(), QScroller.ScrollerGestureType.LeftMouseButtonGesture)
 
             def _restyle_table():
                 tc = theme.colors()
