@@ -15,9 +15,10 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt  # noqa: E402
 from PySide6.QtGui import QKeyEvent  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QScroller  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from qfluentwidgets import LineEdit, Theme, setTheme  # noqa: E402
 
 from weather_duty import config  # noqa: E402
@@ -284,6 +285,73 @@ class BranchManagerMultiMatchTest(unittest.TestCase):
         self.assertTrue(self.dlg._region_search_banner.isVisible())
         self.assertFalse(self.dlg._region_search_candidates.isVisible())
         self.assertEqual(config.get_branches()["본사"], [])
+
+
+class HourlyDetailDialogTest(unittest.TestCase):
+    """시간별 예보 표가 시각을 열(가로)로 늘어놓아 열이 넘치면, 스크롤바를
+    정확히 잡지 않고 표 아무 데나 마우스로 눌러 드래그해도 가로로 움직여야
+    한다(QScroller.grabGesture로 활성화) - 사용자가 실제로 안 되던 것을
+    보고한 동작이라 진짜 마우스 드래그 시퀀스로 검증한다."""
+
+    def setUp(self):
+        self.parent = _fake_dialog_parent()
+        self.day = {
+            "date": "20260830",
+            "hourly": [
+                {"time": f"{h:02d}00", "temp": "20", "feels_like": 22.0, "pop": 10,
+                 "pcp": "강수없음", "condition": "구름많음"}
+                for h in range(0, 24, 3)
+            ],
+        }
+
+    def tearDown(self):
+        _dispose(self.parent)
+        _app.processEvents()
+
+    def test_dragging_table_viewport_scrolls_horizontally(self):
+        dlg = gui.HourlyDetailDialog(self.parent, "테스트", self.day)
+        dlg.show()
+        _app.processEvents()
+
+        table = next(w for w in dlg.findChildren(object) if w.__class__.__name__ == "TableWidget")
+        scrollbar = table.horizontalScrollBar()
+        self.assertGreater(scrollbar.maximum(), 0, "표 폭이 실제로 넘쳐야 이 테스트가 의미 있다")
+        self.assertEqual(scrollbar.value(), 0)
+
+        viewport = table.viewport()
+        start = QPoint(200, 100)
+        QTest.mousePress(viewport, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start)
+        _app.processEvents()
+        for dx in range(0, 150, 10):
+            QTest.mouseMove(viewport, QPoint(start.x() - dx, start.y()))
+            _app.processEvents()
+            QTest.qWait(15)
+        QTest.mouseRelease(
+            viewport, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(start.x() - 150, start.y()),
+        )
+        _app.processEvents()
+        QTest.qWait(200)
+        _app.processEvents()
+
+        self.assertGreater(scrollbar.value(), 0, "마우스로 드래그해도 가로 스크롤이 움직이지 않음")
+        _dispose(dlg)
+
+    def test_scroller_gesture_grabbed_on_viewport(self):
+        # QScroller.grabbedGesture()는 QScroller.ScrollerGestureType이 아니라
+        # Qt가 그 호출마다 새로 할당하는 Qt.GestureType id를 돌려주므로(실측:
+        # 아무것도 안 잡은 위젯은 256, 잡은 뒤엔 그와 다른 값) 특정 상수와
+        # 비교하는 대신 "아무것도 안 잡은 기본값과 달라졌는지"로 확인한다.
+        from PySide6.QtWidgets import QWidget
+
+        ungrabbed_baseline = QScroller.grabbedGesture(QWidget())
+
+        dlg = gui.HourlyDetailDialog(self.parent, "테스트", self.day)
+        dlg.show()
+        _app.processEvents()
+        table = next(w for w in dlg.findChildren(object) if w.__class__.__name__ == "TableWidget")
+        grabbed = QScroller.grabbedGesture(table.viewport())
+        self.assertNotEqual(grabbed, ungrabbed_baseline)
+        _dispose(dlg)
 
 
 class SignalDuplicationTest(unittest.TestCase):
